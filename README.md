@@ -14,6 +14,12 @@ There is no database and no lock-in. Your cards are just `.md` files, so you can
 
 The interface is designed to feel like a polished terminal tool: fast navigation, compact status bars, modal command cards, and a warm gold palette inspired by a magical collector's notebook.
 
+## Demo
+
+<video src="demo.mov" controls muted loop playsinline width="100%">
+  <a href="demo.mov">Watch the demo video</a>
+</video>
+
 ## Features
 
 - Board browser with live board details
