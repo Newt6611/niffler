@@ -543,7 +543,6 @@ fn render_board(frame: &mut Frame<'_>, app: &App, area: Rect, theme: &UiTheme) {
             is_selected_list,
             is_move_target,
             is_list_move_target,
-            theme,
             default_list_border_color,
         );
         let title = list_title(
@@ -786,12 +785,11 @@ fn list_block_style(
     is_selected_list: bool,
     is_move_target: bool,
     is_list_move_target: bool,
-    theme: &UiTheme,
     default_border_color: Color,
 ) -> Style {
     if is_move_target || is_list_move_target {
         Style::default()
-            .fg(theme.move_target)
+            .fg(parse_color(border_color).unwrap_or(default_border_color))
             .add_modifier(Modifier::BOLD)
     } else if is_selected_list {
         Style::default()
@@ -812,10 +810,12 @@ fn default_list_border_color(board: &Board) -> Color {
 
 fn list_border_type(
     is_selected_list: bool,
-    is_move_target: bool,
+    _is_move_target: bool,
     is_list_move_target: bool,
 ) -> BorderType {
-    if is_selected_list && !is_move_target && !is_list_move_target {
+    if is_list_move_target {
+        BorderType::Double
+    } else if is_selected_list {
         BorderType::QuadrantInside
     } else {
         BorderType::Plain
@@ -1890,53 +1890,37 @@ mod tests {
 
     #[test]
     fn list_block_style_marks_selected_and_move_targets() {
-        let theme = default_ui_theme();
         let default_border_color = Color::Rgb(245, 158, 11);
         assert_eq!(
-            list_block_style(
-                Some("#22c55e"),
-                true,
-                false,
-                false,
-                &theme,
-                default_border_color
-            ),
+            list_block_style(Some("#22c55e"), true, false, false, default_border_color),
             Style::default()
                 .fg(Color::Rgb(34, 197, 94))
                 .add_modifier(Modifier::BOLD),
         );
         assert_eq!(
-            list_block_style(None, true, false, false, &theme, default_border_color),
+            list_block_style(None, true, false, false, default_border_color),
             Style::default()
                 .fg(default_border_color)
                 .add_modifier(Modifier::BOLD),
         );
         assert_eq!(
-            list_block_style(
-                Some("#22c55e"),
-                false,
-                true,
-                false,
-                &theme,
-                default_border_color
-            ),
+            list_block_style(Some("#22c55e"), false, true, false, default_border_color),
             Style::default()
-                .fg(theme.move_target)
+                .fg(Color::Rgb(34, 197, 94))
                 .add_modifier(Modifier::BOLD),
         );
         assert_eq!(
-            list_block_style(None, false, false, false, &theme, default_border_color),
+            list_block_style(Some("#22c55e"), true, false, true, default_border_color),
+            Style::default()
+                .fg(Color::Rgb(34, 197, 94))
+                .add_modifier(Modifier::BOLD),
+        );
+        assert_eq!(
+            list_block_style(None, false, false, false, default_border_color),
             Style::default().fg(default_border_color)
         );
         assert_eq!(
-            list_block_style(
-                Some("#22c55e"),
-                false,
-                false,
-                false,
-                &theme,
-                default_border_color
-            ),
+            list_block_style(Some("#22c55e"), false, false, false, default_border_color),
             Style::default().fg(Color::Rgb(34, 197, 94))
         );
         assert_eq!(
@@ -1945,7 +1929,6 @@ mod tests {
                 false,
                 false,
                 false,
-                &theme,
                 default_border_color
             ),
             Style::default().fg(default_border_color)
@@ -1959,8 +1942,11 @@ mod tests {
             BorderType::QuadrantInside
         );
         assert_eq!(list_border_type(false, false, false), BorderType::Plain);
-        assert_eq!(list_border_type(true, true, false), BorderType::Plain);
-        assert_eq!(list_border_type(true, false, true), BorderType::Plain);
+        assert_eq!(
+            list_border_type(true, true, false),
+            BorderType::QuadrantInside
+        );
+        assert_eq!(list_border_type(true, false, true), BorderType::Double);
     }
 
     #[test]
