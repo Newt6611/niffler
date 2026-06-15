@@ -440,7 +440,22 @@ fn render_board(frame: &mut Frame<'_>, app: &App, area: Rect, theme: &UiTheme) {
         return;
     };
 
-    let content_area = if area.height >= 2 {
+    let content_area = if area.height >= 5 && !board.lists.is_empty() {
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .split(area);
+        frame.render_widget(
+            Paragraph::new(board_header_line(board, app.mode.name(), theme)),
+            layout[0],
+        );
+        render_board_navigator(frame, board, app.selected_list, layout[1], theme);
+        layout[2]
+    } else if area.height >= 2 {
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(1)])
@@ -483,7 +498,7 @@ fn render_board(frame: &mut Frame<'_>, app: &App, area: Rect, theme: &UiTheme) {
 
     let (lists_area, preview_area) = board_content_layout(content_area, app.show_preview);
 
-    let available_columns = ((lists_area.width as usize).saturating_sub(24) / 20).max(1);
+    let available_columns = ((lists_area.width as usize) / 16).max(1);
     let column_count = available_columns.min(3).min(board.lists.len());
 
     let list_order = list_preview_order(app);
@@ -618,9 +633,80 @@ fn visible_list_window(
     let visible_count = column_count.min(list_count);
     let focus_position = focus_position.min(list_count.saturating_sub(1));
     let start = focus_position
-        .saturating_sub(visible_count.saturating_sub(1))
+        .saturating_sub(visible_count / 2)
         .min(list_count - visible_count);
     start..start + visible_count
+}
+
+fn board_navigator_labels(board: &Board, selected_list: usize) -> Vec<String> {
+    board
+        .lists
+        .iter()
+        .enumerate()
+        .map(|(index, list)| {
+            if index == selected_list {
+                format!("[{}]", list.name.to_uppercase())
+            } else {
+                list.name.to_uppercase()
+            }
+        })
+        .collect()
+}
+
+fn board_navigator_scroll_offset(labels: &[String], selected_list: usize, width: u16) -> u16 {
+    let width = width as usize;
+    if width == 0 || labels.is_empty() {
+        return 0;
+    }
+
+    let selected_list = selected_list.min(labels.len().saturating_sub(1));
+    let active_start = labels
+        .iter()
+        .take(selected_list)
+        .map(|label| label.chars().count() + 3)
+        .sum::<usize>();
+    let active_end = active_start + labels[selected_list].chars().count();
+
+    if active_end <= width {
+        0
+    } else {
+        active_end.saturating_sub(width)
+    }
+    .min(active_start)
+    .try_into()
+    .unwrap_or(u16::MAX)
+}
+
+fn render_board_navigator(
+    frame: &mut Frame<'_>,
+    board: &Board,
+    selected_list: usize,
+    area: Rect,
+    theme: &UiTheme,
+) {
+    if area.height == 0 || area.width == 0 || board.lists.is_empty() {
+        return;
+    }
+
+    let labels = board_navigator_labels(board, selected_list);
+    let selected_list = selected_list.min(labels.len().saturating_sub(1));
+    let mut spans = Vec::with_capacity(labels.len().saturating_mul(2).saturating_sub(1));
+    for (index, label) in labels.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" • ", Style::default().fg(theme.inactive)));
+        }
+        let style = if index == selected_list {
+            Style::default()
+                .fg(theme.active_selection)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.muted)
+        };
+        spans.push(Span::styled(label.clone(), style));
+    }
+
+    let scroll = board_navigator_scroll_offset(&labels, selected_list, area.width);
+    frame.render_widget(Paragraph::new(Line::from(spans)).scroll((0, scroll)), area);
 }
 
 fn list_preview_order(app: &App) -> Vec<usize> {
@@ -1296,7 +1382,7 @@ mod tests {
     use crate::board::{Board, List, Project, default_app_config};
     use crate::card::Card;
     use crate::{app::App, mode::Screen};
-    use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+    use ratatui::{Terminal, backend::TestBackend, buffer::Cell, layout::Rect};
     use std::path::PathBuf;
 
     fn sample_board() -> Board {
@@ -1366,6 +1452,42 @@ mod tests {
             selected_project: 0,
             selected_list: 0,
             selected_cards: vec![0, 0],
+            status: String::new(),
+            should_quit: false,
+        }
+    }
+
+    fn board_with_list_names(names: &[&str]) -> Board {
+        Board {
+            name: "workflow".to_string(),
+            path: PathBuf::from("workflow"),
+            theme: default_theme_colors(),
+            colors: crate::board::default_color_options(),
+            lists: names
+                .iter()
+                .map(|name| List {
+                    name: (*name).to_string(),
+                    path: PathBuf::from(name.to_lowercase()),
+                    cards: vec![card(&format!("{name} card"), &format!("{name}.md"))],
+                    border_color: None,
+                })
+                .collect(),
+        }
+    }
+
+    fn board_app_with_lists(names: &[&str], selected_list: usize, show_preview: bool) -> App {
+        App {
+            root: PathBuf::from("/tmp"),
+            config: default_app_config(),
+            screen: Screen::Board,
+            mode: Mode::Normal,
+            show_preview,
+            projects: Vec::new(),
+            board: Some(board_with_list_names(names)),
+            project_preview: None,
+            selected_project: 0,
+            selected_list,
+            selected_cards: vec![0; names.len()],
             status: String::new(),
             should_quit: false,
         }
@@ -1483,6 +1605,30 @@ mod tests {
                 }
                 line
             })
+            .collect()
+    }
+
+    fn render_board_navigator_buffer(board: &Board, selected_list: usize, area: Rect) -> Vec<Cell> {
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_board_navigator(
+                    frame,
+                    board,
+                    selected_list,
+                    area,
+                    &UiTheme::from_config(&board.theme),
+                )
+            })
+            .unwrap();
+
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .cloned()
             .collect()
     }
 
@@ -1658,6 +1804,41 @@ mod tests {
     }
 
     #[test]
+    fn board_navigator_line_shows_all_lists_and_highlights_active() {
+        let board = board_with_list_names(&["TODO", "PROCESSING", "PR", "TESTING", "DONE"]);
+        let labels = board_navigator_labels(&board, 2);
+
+        assert_eq!(
+            labels,
+            vec!["TODO", "PROCESSING", "[PR]", "TESTING", "DONE"]
+        );
+
+        let cells = render_board_navigator_buffer(&board, 2, Rect::new(0, 0, 80, 1));
+        let active_cells = cells
+            .iter()
+            .filter(|cell| {
+                cell.symbol() != " "
+                    && cell.symbol() != "•"
+                    && cell.style().fg == Some(default_ui_theme().active_selection)
+            })
+            .count();
+        let inactive_cells = cells
+            .iter()
+            .filter(|cell| {
+                cell.symbol() != " "
+                    && cell.symbol() != "•"
+                    && cell.style().fg == Some(default_ui_theme().muted)
+            })
+            .count();
+
+        assert!(active_cells >= 4, "expected [PR] to be active colored");
+        assert!(
+            inactive_cells > active_cells,
+            "expected inactive list labels"
+        );
+    }
+
+    #[test]
     fn list_title_includes_card_count() {
         assert_eq!(list_title("TODO", 1, false), " TODO [1] ");
         assert_eq!(list_title("DONE", 0, false), " DONE [0] ");
@@ -1772,8 +1953,11 @@ mod tests {
     }
 
     #[test]
-    fn selected_list_uses_thick_border() {
-        assert_eq!(list_border_type(true, false, false), BorderType::Thick);
+    fn selected_list_uses_distinct_border() {
+        assert_eq!(
+            list_border_type(true, false, false),
+            BorderType::QuadrantInside
+        );
         assert_eq!(list_border_type(false, false, false), BorderType::Plain);
         assert_eq!(list_border_type(true, true, false), BorderType::Plain);
         assert_eq!(list_border_type(true, false, true), BorderType::Plain);
@@ -2072,8 +2256,17 @@ mod tests {
     #[test]
     fn visible_list_window_keeps_focused_list_visible() {
         assert_eq!(visible_list_window(0, 3, 6), 0..3);
-        assert_eq!(visible_list_window(3, 3, 6), 1..4);
+        assert_eq!(visible_list_window(3, 3, 6), 2..5);
         assert_eq!(visible_list_window(5, 3, 6), 3..6);
+    }
+
+    #[test]
+    fn visible_list_window_centers_focused_list_when_possible() {
+        assert_eq!(visible_list_window(0, 3, 7), 0..3);
+        assert_eq!(visible_list_window(2, 3, 7), 1..4);
+        assert_eq!(visible_list_window(3, 3, 7), 2..5);
+        assert_eq!(visible_list_window(5, 3, 7), 4..7);
+        assert_eq!(visible_list_window(3, 2, 7), 2..4);
     }
 
     #[test]
@@ -2088,6 +2281,43 @@ mod tests {
     fn render_board_with_preview_renders_preview_title() {
         let app = sample_board_app(true);
         board_renders_preview(&app, Rect::new(0, 0, 80, 16), true);
+    }
+
+    #[test]
+    fn render_board_shows_global_navigator_and_centered_list_window() {
+        let app = board_app_with_lists(
+            &[
+                "TODO",
+                "PROCESSING",
+                "PR",
+                "TESTING",
+                "STAGING",
+                "DEPLOY",
+                "DONE",
+            ],
+            2,
+            true,
+        );
+        let lines = render_board_lines(&app, Rect::new(0, 0, 100, 18));
+        let navigator = lines
+            .iter()
+            .find(|line| line.contains("[PR]"))
+            .expect("navigator should mark active list");
+
+        assert!(navigator.contains("TODO"));
+        assert!(navigator.contains("PROCESSING"));
+        assert!(navigator.contains("[PR]"));
+        assert!(navigator.contains("TESTING"));
+        assert!(navigator.contains("STAGING"));
+        assert!(navigator.contains("DEPLOY"));
+        assert!(navigator.contains("DONE"));
+
+        let columns = lines.iter().skip(2).cloned().collect::<Vec<_>>().join("\n");
+        assert!(columns.contains("PROCESSING"));
+        assert!(columns.contains("PR"));
+        assert!(columns.contains("TESTING"));
+        assert!(!columns.contains("TODO"));
+        assert!(!columns.contains("STAGING"));
     }
 
     #[test]
