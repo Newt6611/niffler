@@ -13,7 +13,6 @@ pub struct ThemeColors {
     pub header: String,
     pub success: String,
     pub inactive: String,
-    pub unfocused_panel_border: String,
     pub text: String,
     pub muted: String,
     pub selected_text: String,
@@ -56,7 +55,7 @@ pub struct Board {
 
 pub fn default_color_options() -> Vec<ColorOption> {
     vec![
-        color_option("Default", "#3c3c3c"),
+        color_option("Default", "#f59e0b"),
         color_option("Amber", "#f59e0b"),
         color_option("Green", "#22c55e"),
         color_option("Sky", "#38bdf8"),
@@ -80,7 +79,6 @@ pub fn default_theme_colors() -> ThemeColors {
         header: "#ecc45b".to_string(),
         success: "#be8f42".to_string(),
         inactive: "#58544c".to_string(),
-        unfocused_panel_border: "#3c3c3c".to_string(),
         text: "#e5dbc7".to_string(),
         muted: "#9a8e7a".to_string(),
         selected_text: "black".to_string(),

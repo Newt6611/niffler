@@ -624,7 +624,6 @@ fn set_theme_color(theme: &mut ThemeColors, key: &str, value: &str) {
         "header" => &mut theme.header,
         "success" => &mut theme.success,
         "inactive" => &mut theme.inactive,
-        "unfocused_panel_border" => &mut theme.unfocused_panel_border,
         "text" => &mut theme.text,
         "muted" => &mut theme.muted,
         "selected_text" => &mut theme.selected_text,
@@ -641,12 +640,11 @@ fn set_theme_color(theme: &mut ThemeColors, key: &str, value: &str) {
 
 fn write_theme_metadata(content: &mut String, theme: &ThemeColors) {
     content.push_str(&format!(
-        "  active_selection: \"{}\"\n  header: \"{}\"\n  success: \"{}\"\n  inactive: \"{}\"\n  unfocused_panel_border: \"{}\"\n  text: \"{}\"\n  muted: \"{}\"\n  selected_text: \"{}\"\n  shell: \"{}\"\n  panel: \"{}\"\n  preview: \"{}\"\n  modal: \"{}\"\n  move_target: \"{}\"\n  danger: \"{}\"\n",
+        "  active_selection: \"{}\"\n  header: \"{}\"\n  success: \"{}\"\n  inactive: \"{}\"\n  text: \"{}\"\n  muted: \"{}\"\n  selected_text: \"{}\"\n  shell: \"{}\"\n  panel: \"{}\"\n  preview: \"{}\"\n  modal: \"{}\"\n  move_target: \"{}\"\n  danger: \"{}\"\n",
         theme.active_selection,
         theme.header,
         theme.success,
         theme.inactive,
-        theme.unfocused_panel_border,
         theme.text,
         theme.muted,
         theme.selected_text,
@@ -965,13 +963,14 @@ mod tests {
         assert_eq!(config.theme.active_selection, "#daad52");
         assert_eq!(config.theme.selected_text, "black");
         assert_eq!(config.colors[0].label, "Default");
-        assert_eq!(config.colors[0].value, "#3c3c3c");
+        assert_eq!(config.colors[0].value, "#f59e0b");
         let content = fs::read_to_string(root.join("config.yaml")).unwrap();
         assert!(content.contains("theme:"));
         assert!(content.contains("active_selection: \"#daad52\""));
+        assert!(!content.contains("unfocused_panel_border"));
         assert!(content.contains("colors:"));
         assert!(content.contains("label: Default"));
-        assert!(content.contains("value: \"#3c3c3c\""));
+        assert!(content.contains("value: \"#f59e0b\""));
         fs::remove_dir_all(root).unwrap();
     }
 

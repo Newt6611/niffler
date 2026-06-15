@@ -208,10 +208,7 @@ fn handle_normal_key(
             }
         }
         KeyCode::Char('m') => {
-            app.mode = Mode::Move {
-                target_list: app.selected_list,
-                target_position: app.default_move_target_position(),
-            };
+            start_move_card(app);
         }
         KeyCode::Char('M') => {
             app.mode = Mode::MoveList {
@@ -276,6 +273,17 @@ fn start_new_card(app: &mut App) {
 
     app.mode = Mode::Add {
         input: String::new(),
+    };
+}
+
+fn start_move_card(app: &mut App) {
+    if app.selected_card_path().is_none() {
+        return;
+    }
+
+    app.mode = Mode::Move {
+        target_list: app.selected_list,
+        target_position: app.default_move_target_position(),
     };
 }
 
@@ -641,6 +649,28 @@ mod tests {
         };
 
         handle_picker_key(&mut app, KeyEvent::from(KeyCode::Char('q')), picker).unwrap();
+
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn move_card_on_empty_list_stays_normal() {
+        let mut app = app_with_empty_board();
+        app.board = Some(Board {
+            name: "ready".to_string(),
+            path: PathBuf::from("/tmp/ready"),
+            theme: default_theme_colors(),
+            colors: default_color_options(),
+            lists: vec![List {
+                name: "TODO".to_string(),
+                path: PathBuf::from("/tmp/ready/todo"),
+                cards: Vec::new(),
+                border_color: None,
+            }],
+        });
+        app.selected_cards = vec![0];
+
+        start_move_card(&mut app);
 
         assert_eq!(app.mode, Mode::Normal);
     }

@@ -6,11 +6,12 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Tabs, Wrap,
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Tabs, Wrap,
 };
 use std::ops::Range;
 
 const HELP_CLOSE_LINE: &str = "? / Esc / q  Close help";
+const CARD_BLOCK_HEIGHT: u16 = 3;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct UiTheme {
@@ -18,7 +19,6 @@ struct UiTheme {
     header: Color,
     success: Color,
     inactive: Color,
-    unfocused_panel_border: Color,
     text: Color,
     muted: Color,
     selected_text: Color,
@@ -41,10 +41,6 @@ impl UiTheme {
             header: color_from_config(&config.header, &defaults.header),
             success: color_from_config(&config.success, &defaults.success),
             inactive: color_from_config(&config.inactive, &defaults.inactive),
-            unfocused_panel_border: color_from_config(
-                &config.unfocused_panel_border,
-                &defaults.unfocused_panel_border,
-            ),
             text: color_from_config(&config.text, &defaults.text),
             muted: color_from_config(&config.muted, &defaults.muted),
             selected_text: color_from_config(&config.selected_text, &defaults.selected_text),
@@ -515,6 +511,7 @@ fn render_board(frame: &mut Frame<'_>, app: &App, area: Rect, theme: &UiTheme) {
         .split(lists_area);
 
     let is_card_move_mode = matches!(app.mode, Mode::Move { .. });
+    let default_list_border_color = default_list_border_color(board);
 
     for (column_area, list_index) in columns
         .iter()
@@ -532,6 +529,7 @@ fn render_board(frame: &mut Frame<'_>, app: &App, area: Rect, theme: &UiTheme) {
             is_move_target,
             is_list_move_target,
             theme,
+            default_list_border_color,
         );
         let title = list_title(
             &list.name,
@@ -545,33 +543,60 @@ fn render_board(frame: &mut Frame<'_>, app: &App, area: Rect, theme: &UiTheme) {
         }
         let selected_row = selected_row_index(&app.mode, &rows, selected_card);
         let visible_height = column_area.height.saturating_sub(2) as usize;
-        let card_start = selected_row.saturating_sub(visible_height.saturating_sub(1));
-        let card_end = (card_start + visible_height).min(rows.len());
-        let items = rows[card_start..card_end]
-            .iter()
-            .enumerate()
-            .map(|(offset, row)| {
-                let row_index = card_start + offset;
-                let selected =
-                    is_row_selected(&app.mode, row, is_selected_list, row_index, selected_card);
-                let style = card_row_style(
-                    row,
-                    selected,
-                    is_selected_list,
-                    is_move_target || is_list_move_target,
-                    theme,
-                );
-                ListItem::new(row.label()).style(style)
-            })
-            .collect::<Vec<_>>();
+        let render_bordered_cards = visible_height >= CARD_BLOCK_HEIGHT as usize;
+        let visible_row_count = if render_bordered_cards {
+            (visible_height / CARD_BLOCK_HEIGHT as usize).max(1)
+        } else {
+            visible_height.max(1)
+        };
+        let card_start = selected_row.saturating_sub(visible_row_count.saturating_sub(1));
+        let card_end = (card_start + visible_row_count).min(rows.len());
 
-        let widget = List::new(items).block(
-            Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .style(block_style),
-        );
-        frame.render_widget(widget, *column_area);
+        let list_block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_type(list_border_type(
+                is_selected_list,
+                is_move_target,
+                is_list_move_target,
+            ))
+            .style(block_style);
+        let rows_area = column_area.inner(Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
+        frame.render_widget(list_block, *column_area);
+
+        let mut y = rows_area.y;
+        for (offset, row) in rows[card_start..card_end].iter().enumerate() {
+            let height = board_row_height(row, render_bordered_cards);
+            if y.saturating_add(height) > rows_area.bottom() {
+                break;
+            }
+            let row_index = card_start + offset;
+            let selected =
+                is_row_selected(&app.mode, row, is_selected_list, row_index, selected_card);
+            let style = card_row_style(
+                row,
+                selected,
+                is_selected_list,
+                is_move_target || is_list_move_target,
+                theme,
+            );
+            render_board_row(
+                frame,
+                row,
+                Rect {
+                    x: rows_area.x,
+                    y,
+                    width: rows_area.width,
+                    height,
+                },
+                style,
+                render_bordered_cards,
+            );
+            y = y.saturating_add(height);
+        }
     }
 
     if let Some(preview_area) = preview_area
@@ -637,6 +662,34 @@ impl BoardRow<'_> {
     }
 }
 
+fn board_row_height(row: &BoardRow<'_>, render_bordered_cards: bool) -> u16 {
+    if render_bordered_cards && !matches!(row, BoardRow::Placeholder(_)) {
+        CARD_BLOCK_HEIGHT
+    } else {
+        1
+    }
+}
+
+fn render_board_row(
+    frame: &mut Frame<'_>,
+    row: &BoardRow<'_>,
+    area: Rect,
+    style: Style,
+    render_bordered_cards: bool,
+) {
+    let paragraph = if render_bordered_cards && !matches!(row, BoardRow::Placeholder(_)) {
+        Paragraph::new(row.label()).style(style).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .padding(Padding::horizontal(1))
+                .style(style),
+        )
+    } else {
+        Paragraph::new(row.label()).style(style)
+    };
+    frame.render_widget(paragraph, area);
+}
+
 fn list_title(name: &str, card_count: usize, is_target: bool) -> String {
     let prefix = if is_target { " -> " } else { " " };
     format!("{prefix}{} [{}] ", name.to_uppercase(), card_count)
@@ -648,6 +701,7 @@ fn list_block_style(
     is_move_target: bool,
     is_list_move_target: bool,
     theme: &UiTheme,
+    default_border_color: Color,
 ) -> Style {
     if is_move_target || is_list_move_target {
         Style::default()
@@ -655,10 +709,30 @@ fn list_block_style(
             .add_modifier(Modifier::BOLD)
     } else if is_selected_list {
         Style::default()
-            .fg(theme.header)
+            .fg(parse_color(border_color).unwrap_or(default_border_color))
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(parse_color(border_color).unwrap_or(theme.unfocused_panel_border))
+        Style::default().fg(parse_color(border_color).unwrap_or(default_border_color))
+    }
+}
+
+fn default_list_border_color(board: &Board) -> Color {
+    board
+        .colors
+        .first()
+        .and_then(|color| parse_color(Some(&color.value)))
+        .unwrap_or(Color::Rgb(245, 158, 11))
+}
+
+fn list_border_type(
+    is_selected_list: bool,
+    is_move_target: bool,
+    is_list_move_target: bool,
+) -> BorderType {
+    if is_selected_list && !is_move_target && !is_list_move_target {
+        BorderType::QuadrantInside
+    } else {
+        BorderType::Plain
     }
 }
 
@@ -1389,6 +1463,29 @@ mod tests {
             .collect()
     }
 
+    fn render_board_row_lines(row: &BoardRow<'_>, render_bordered_cards: bool) -> Vec<String> {
+        let area = Rect::new(0, 0, 18, 3);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_board_row(frame, row, area, Style::default(), render_bordered_cards)
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        (0..area.height)
+            .map(|y| {
+                let mut line = String::new();
+                for x in 0..area.width {
+                    let symbol = buffer.cell((x, y)).map(|cell| cell.symbol()).unwrap_or(" ");
+                    line.push_str(symbol);
+                }
+                line
+            })
+            .collect()
+    }
+
     fn render_projects_lines(app: &App, area: Rect) -> Vec<String> {
         let backend = TestBackend::new(area.width, area.height);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1595,32 +1692,91 @@ mod tests {
     }
 
     #[test]
+    fn card_rows_render_title_inside_block_widget() {
+        let lines = render_board_row_lines(&BoardRow::Card("task"), true);
+
+        assert!(lines[0].contains("┌"));
+        assert!(lines[1].contains("task"));
+        assert!(lines[2].contains("└"));
+        assert!(!lines.join("\n").contains("+---"));
+        assert_eq!(board_row_height(&BoardRow::Card("task"), true), 3);
+        assert_eq!(board_row_height(&BoardRow::Card("task"), false), 1);
+        assert_eq!(
+            board_row_height(&BoardRow::Placeholder("No cards"), true),
+            1
+        );
+    }
+
+    #[test]
     fn list_block_style_marks_selected_and_move_targets() {
         let theme = default_ui_theme();
+        let default_border_color = Color::Rgb(245, 158, 11);
         assert_eq!(
-            list_block_style(None, true, false, false, &theme),
+            list_block_style(
+                Some("#22c55e"),
+                true,
+                false,
+                false,
+                &theme,
+                default_border_color
+            ),
             Style::default()
-                .fg(theme.header)
+                .fg(Color::Rgb(34, 197, 94))
                 .add_modifier(Modifier::BOLD),
         );
         assert_eq!(
-            list_block_style(Some("#22c55e"), false, true, false, &theme),
+            list_block_style(None, true, false, false, &theme, default_border_color),
+            Style::default()
+                .fg(default_border_color)
+                .add_modifier(Modifier::BOLD),
+        );
+        assert_eq!(
+            list_block_style(
+                Some("#22c55e"),
+                false,
+                true,
+                false,
+                &theme,
+                default_border_color
+            ),
             Style::default()
                 .fg(theme.move_target)
                 .add_modifier(Modifier::BOLD),
         );
         assert_eq!(
-            list_block_style(None, false, false, false, &theme),
-            Style::default().fg(theme.unfocused_panel_border)
+            list_block_style(None, false, false, false, &theme, default_border_color),
+            Style::default().fg(default_border_color)
         );
         assert_eq!(
-            list_block_style(Some("#22c55e"), false, false, false, &theme),
+            list_block_style(
+                Some("#22c55e"),
+                false,
+                false,
+                false,
+                &theme,
+                default_border_color
+            ),
             Style::default().fg(Color::Rgb(34, 197, 94))
         );
         assert_eq!(
-            list_block_style(Some("not-a-color"), false, false, false, &theme),
-            Style::default().fg(theme.unfocused_panel_border)
+            list_block_style(
+                Some("not-a-color"),
+                false,
+                false,
+                false,
+                &theme,
+                default_border_color
+            ),
+            Style::default().fg(default_border_color)
         );
+    }
+
+    #[test]
+    fn selected_list_uses_thick_border() {
+        assert_eq!(list_border_type(true, false, false), BorderType::Thick);
+        assert_eq!(list_border_type(false, false, false), BorderType::Plain);
+        assert_eq!(list_border_type(true, true, false), BorderType::Plain);
+        assert_eq!(list_border_type(true, false, true), BorderType::Plain);
     }
 
     #[test]
@@ -1628,7 +1784,7 @@ mod tests {
         let options = vec![
             PickerOption {
                 label: "Default".to_string(),
-                value: "#3c3c3c".to_string(),
+                value: "#f59e0b".to_string(),
             },
             PickerOption {
                 label: "Red".to_string(),
@@ -1638,7 +1794,7 @@ mod tests {
 
         assert_eq!(
             picker_option_labels(&options),
-            vec!["Default  #3c3c3c", "Red      #ef4444"]
+            vec!["Default  #f59e0b", "Red      #ef4444"]
         );
     }
 
