@@ -8,12 +8,14 @@ pub struct Card {
     pub path: PathBuf,
     pub content: String,
     pub position: i64,
+    pub color: Option<String>,
 }
 
 impl Card {
     pub fn from_markdown(filename: String, path: PathBuf, content: String) -> Self {
         let title = title_from_markdown(&content).unwrap_or_else(|| title_from_filename(&filename));
         let position = position_from_markdown(&content).unwrap_or(i64::MAX);
+        let color = color_from_markdown(&content);
 
         Self {
             title,
@@ -21,6 +23,7 @@ impl Card {
             path,
             content,
             position,
+            color,
         }
     }
 }
@@ -38,6 +41,25 @@ pub fn position_from_markdown(content: &str) -> Option<i64> {
         }
         if let Some(value) = trimmed.strip_prefix("position:") {
             return value.trim().parse().ok();
+        }
+    }
+
+    None
+}
+
+pub fn color_from_markdown(content: &str) -> Option<String> {
+    let mut lines = content.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            return None;
+        }
+        if let Some(value) = trimmed.strip_prefix("color:") {
+            return Some(unquote_frontmatter_value(value.trim()).to_string());
         }
     }
 
@@ -197,6 +219,27 @@ pub fn markdown_with_updated_at(content: &str) -> String {
     output
 }
 
+pub fn markdown_with_color(content: &str, color: &str) -> String {
+    let normalized = content.replace("\r\n", "\n");
+    let mut lines = normalized
+        .lines()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    touch_updated_at(&mut lines);
+
+    if let Some(end_index) = frontmatter_end_index(&lines) {
+        let mut frontmatter = lines[1..end_index].to_vec();
+        upsert_frontmatter_field(&mut frontmatter, "color", format!("\"{color}\""));
+        lines.splice(1..end_index, frontmatter);
+    }
+
+    let mut output = lines.join("\n");
+    if content.ends_with('\n') {
+        output.push('\n');
+    }
+    output
+}
+
 fn touch_updated_at(lines: &mut Vec<String>) {
     let now = current_timestamp().to_string();
     if let Some(end_index) = frontmatter_end_index(lines) {
@@ -238,6 +281,18 @@ fn frontmatter_has_field(frontmatter: &[String], key: &str) -> bool {
 
 fn frontmatter_line_has_key(line: &str, key: &str) -> bool {
     line.trim_start().starts_with(&format!("{key}:"))
+}
+
+fn unquote_frontmatter_value(value: &str) -> &str {
+    value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+        })
+        .unwrap_or(value)
 }
 
 fn current_timestamp() -> u64 {
@@ -328,6 +383,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_color_from_markdown_frontmatter() {
+        assert_eq!(
+            color_from_markdown("---\ncolor: \"#22c55e\"\n---\n\n# Task\n").as_deref(),
+            Some("#22c55e")
+        );
+        assert_eq!(
+            color_from_markdown("---\ncolor: '#38bdf8'\n---\n\n# Task\n").as_deref(),
+            Some("#38bdf8")
+        );
+        assert_eq!(color_from_markdown("# Task\n"), None);
+    }
+
+    #[test]
     fn writes_or_updates_position_frontmatter() {
         let created = markdown_with_position("# Task\n", 1000);
         assert!(created.starts_with("---\nposition: 1000\n"));
@@ -361,6 +429,24 @@ mod tests {
             preserved,
             "---\nposition: 2000\ncreated_at: 123\nupdated_at: 124\n---\n\n# Task\n"
         );
+    }
+
+    #[test]
+    fn writes_or_updates_color_frontmatter() {
+        let created = markdown_with_color("# Task\n", "#22c55e");
+        assert!(created.starts_with("---\ncreated_at: "));
+        assert!(created.contains("\nupdated_at: "));
+        assert!(created.contains("\ncolor: \"#22c55e\"\n"));
+        assert!(created.ends_with("---\n\n# Task\n"));
+
+        let updated = markdown_with_color(
+            "---\nposition: 1\ncolor: \"#111111\"\ncreated_at: 123\nupdated_at: 124\n---\n\n# Task\n",
+            "#38bdf8",
+        );
+        assert!(updated.contains("\nposition: 1\n"));
+        assert!(updated.contains("\ncolor: \"#38bdf8\"\n"));
+        assert!(updated.contains("\ncreated_at: 123\n"));
+        assert!(updated.contains("\nupdated_at: "));
     }
 
     #[test]

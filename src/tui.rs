@@ -728,7 +728,10 @@ fn list_preview_order(app: &App) -> Vec<usize> {
 
 #[derive(Debug, PartialEq)]
 enum BoardRow<'a> {
-    Card(&'a str),
+    Card {
+        title: &'a str,
+        color: Option<&'a str>,
+    },
     MoveMarker(String),
     Placeholder(&'a str),
 }
@@ -736,7 +739,7 @@ enum BoardRow<'a> {
 impl BoardRow<'_> {
     fn label(&self) -> String {
         match self {
-            Self::Card(title) => (*title).to_string(),
+            Self::Card { title, .. } => (*title).to_string(),
             Self::MoveMarker(title) => format!("-> {title}"),
             Self::Placeholder(title) => (*title).to_string(),
         }
@@ -864,6 +867,11 @@ fn card_row_style(
             .add_modifier(Modifier::BOLD)
     } else if matches!(row, BoardRow::Placeholder(_)) {
         Style::default().fg(theme.inactive)
+    } else if let BoardRow::Card {
+        color: Some(color), ..
+    } = row
+    {
+        Style::default().fg(parse_color(Some(color)).unwrap_or(theme.text))
     } else if is_selected_list {
         Style::default().fg(theme.text)
     } else {
@@ -930,7 +938,10 @@ fn move_preview_rows<'a>(
         return list
             .cards
             .iter()
-            .map(|card| BoardRow::Card(card.title.as_str()))
+            .map(|card| BoardRow::Card {
+                title: card.title.as_str(),
+                color: card.color.as_deref(),
+            })
             .collect();
     };
 
@@ -950,7 +961,10 @@ fn move_preview_rows<'a>(
             inserted_marker = true;
         }
         if !(list_index == app.selected_list && card_index == source_card) {
-            rows.push(BoardRow::Card(card.title.as_str()));
+            rows.push(BoardRow::Card {
+                title: card.title.as_str(),
+                color: card.color.as_deref(),
+            });
             insertion_index += 1;
         }
     }
@@ -988,7 +1002,7 @@ fn board_footer_text(mode: &Mode, show_preview: bool) -> String {
                 "Preview"
             };
             format!(
-                "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [C] Color [p] {preview} [?] Help [q] Quit"
+                "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [c] Card Color [C] List Color [p] {preview} [?] Help [q] Quit"
             )
         }
         Mode::Help => "[HELP] [?/Esc/q] Close".to_string(),
@@ -1071,10 +1085,10 @@ fn help_text(screen: Screen) -> String {
             "",
             "j/k Move            n New Card          N New List",
             "Up/Down Move        e Edit              M Move List",
-            "Tab/h/l List        m Move              C Color",
+            "Tab/h/l List        m Move              C List Color",
             "                    r Rename            R Rename",
             "Left/Right List     r Rename            D Delete",
-            "q Boards            d Delete",
+            "q Boards            d Delete            c Card Color",
             "p Preview",
             "",
             "Help",
@@ -1869,19 +1883,49 @@ mod tests {
     #[test]
     fn board_row_selectability_distinguishes_placeholder_and_card_rows() {
         assert!(!BoardRow::Placeholder("No cards").is_selectable());
-        assert!(BoardRow::Card("task").is_selectable());
+        assert!(
+            BoardRow::Card {
+                title: "task",
+                color: None
+            }
+            .is_selectable()
+        );
     }
 
     #[test]
     fn card_rows_render_title_inside_block_widget() {
-        let lines = render_board_row_lines(&BoardRow::Card("task"), true);
+        let lines = render_board_row_lines(
+            &BoardRow::Card {
+                title: "task",
+                color: None,
+            },
+            true,
+        );
 
         assert!(lines[0].contains("┌"));
         assert!(lines[1].contains("task"));
         assert!(lines[2].contains("└"));
         assert!(!lines.join("\n").contains("+---"));
-        assert_eq!(board_row_height(&BoardRow::Card("task"), true), 3);
-        assert_eq!(board_row_height(&BoardRow::Card("task"), false), 1);
+        assert_eq!(
+            board_row_height(
+                &BoardRow::Card {
+                    title: "task",
+                    color: None,
+                },
+                true
+            ),
+            3
+        );
+        assert_eq!(
+            board_row_height(
+                &BoardRow::Card {
+                    title: "task",
+                    color: None,
+                },
+                false
+            ),
+            1
+        );
         assert_eq!(
             board_row_height(&BoardRow::Placeholder("No cards"), true),
             1
@@ -1981,19 +2025,59 @@ mod tests {
         assert_eq!(style, Style::default().fg(theme.inactive));
 
         assert_eq!(
-            card_row_style(&BoardRow::Card("card"), false, true, false, &theme),
+            card_row_style(
+                &BoardRow::Card {
+                    title: "card",
+                    color: None,
+                },
+                false,
+                true,
+                false,
+                &theme
+            ),
             Style::default().fg(theme.text)
         );
         assert_eq!(
-            card_row_style(&BoardRow::Card("card"), false, false, false, &theme),
+            card_row_style(
+                &BoardRow::Card {
+                    title: "card",
+                    color: None,
+                },
+                false,
+                false,
+                false,
+                &theme
+            ),
             Style::default().fg(theme.muted)
+        );
+        assert_eq!(
+            card_row_style(
+                &BoardRow::Card {
+                    title: "card",
+                    color: Some("#22c55e"),
+                },
+                false,
+                false,
+                false,
+                &theme
+            ),
+            Style::default().fg(Color::Rgb(34, 197, 94))
         );
     }
 
     #[test]
     fn selected_card_row_is_highlighted_with_bold_background() {
         let theme = default_ui_theme();
-        let selected_style = card_row_style(&BoardRow::Card("card"), true, true, false, &theme);
+        let selected_style = card_row_style(
+            &BoardRow::Card {
+                title: "card",
+                color: None,
+            },
+            true,
+            true,
+            false,
+            &theme,
+        );
         assert_eq!(
             selected_style,
             Style::default()
@@ -2002,7 +2086,16 @@ mod tests {
                 .add_modifier(Modifier::BOLD),
         );
 
-        let selected_move_style = card_row_style(&BoardRow::Card("card"), true, true, true, &theme);
+        let selected_move_style = card_row_style(
+            &BoardRow::Card {
+                title: "card",
+                color: None,
+            },
+            true,
+            true,
+            true,
+            &theme,
+        );
         assert_eq!(
             selected_move_style,
             Style::default()
@@ -2016,7 +2109,10 @@ mod tests {
     fn move_list_mode_does_not_select_board_rows() {
         assert!(!is_row_selected(
             &Mode::MoveList { target_position: 1 },
-            &BoardRow::Card("task"),
+            &BoardRow::Card {
+                title: "task",
+                color: None,
+            },
             true,
             0,
             3
@@ -2412,12 +2508,12 @@ mod tests {
         let app = sample_board_app(false);
         assert_eq!(
             instruction_line(&app),
-            "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [C] Color [p] Preview [?] Help [q] Quit"
+            "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [c] Card Color [C] List Color [p] Preview [?] Help [q] Quit"
         );
         let app = sample_board_app(true);
         assert_eq!(
             instruction_line(&app),
-            "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [C] Color [p] Hide Preview [?] Help [q] Quit"
+            "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [c] Card Color [C] List Color [p] Hide Preview [?] Help [q] Quit"
         );
     }
 
@@ -2431,7 +2527,8 @@ mod tests {
         assert!(text.contains("Tab/h/l"));
         assert!(text.contains("n New Card"));
         assert!(text.contains("N New List"));
-        assert!(text.contains("C Color"));
+        assert!(text.contains("c Card Color"));
+        assert!(text.contains("C List Color"));
         assert!(text.contains("p Preview"));
         assert!(text.contains(HELP_CLOSE_LINE));
         assert!(text.contains("? / Esc / q"));
@@ -2543,6 +2640,7 @@ mod tests {
             path: PathBuf::from(filename),
             content: String::new(),
             position: 0,
+            color: None,
         }
     }
 }

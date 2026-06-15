@@ -91,6 +91,40 @@ impl App {
         })
     }
 
+    pub fn card_color_picker(&self) -> Option<PickerState> {
+        let board = self.board.as_ref()?;
+        let list = board.lists.get(self.selected_list)?;
+        let card_index = *self.selected_cards.get(self.selected_list).unwrap_or(&0);
+        let card = list.cards.get(card_index)?;
+        let selected = card
+            .color
+            .as_deref()
+            .and_then(|color| {
+                self.config
+                    .colors
+                    .iter()
+                    .position(|option| option.value.eq_ignore_ascii_case(color))
+            })
+            .unwrap_or(0);
+        Some(PickerState {
+            title: "Card Color".to_string(),
+            options: self
+                .config
+                .colors
+                .iter()
+                .map(|option| PickerOption {
+                    label: option.label.clone(),
+                    value: option.value.clone(),
+                })
+                .collect(),
+            selected,
+            target: PickerTarget::CardColor {
+                list_index: self.selected_list,
+                card_index,
+            },
+        })
+    }
+
     pub fn set_selected_list_border_color(&mut self, border_color: &str) -> io::Result<()> {
         self.set_list_border_color(self.selected_list, border_color)
     }
@@ -113,6 +147,31 @@ impl App {
         filesystem::set_list_border_color(&board_path, &list_path, Some(border_color))?;
         self.reload_board()?;
         self.status = "Updated list border color".to_string();
+        Ok(())
+    }
+
+    pub fn set_card_color(
+        &mut self,
+        list_index: usize,
+        card_index: usize,
+        color: &str,
+    ) -> io::Result<()> {
+        let Some(board) = &self.board else {
+            self.status = "No board selected".to_string();
+            return Ok(());
+        };
+        let Some(card) = board
+            .lists
+            .get(list_index)
+            .and_then(|list| list.cards.get(card_index))
+        else {
+            self.status = "No card selected".to_string();
+            return Ok(());
+        };
+        let card_path = card.path.clone();
+        filesystem::set_card_color(&card_path, color)?;
+        self.reload_board()?;
+        self.status = "Updated card color".to_string();
         Ok(())
     }
 
@@ -858,17 +917,18 @@ mod tests {
     }
 
     #[test]
-    fn preview_panel_is_hidden_by_default_and_can_toggle() {
+    fn preview_panel_is_visible_by_default_and_can_toggle() {
         let root = temp_root();
-        let app = App::new(root.clone()).unwrap();
+        fs::create_dir_all(root.join("work/todo")).unwrap();
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_selected_project().unwrap();
 
+        assert!(app.show_preview);
+
+        app.toggle_preview().unwrap();
         assert!(!app.show_preview);
-
-        let mut app = app;
         app.toggle_preview().unwrap();
         assert!(app.show_preview);
-        app.toggle_preview().unwrap();
-        assert!(!app.show_preview);
 
         fs::remove_dir_all(root).ok();
     }
@@ -953,6 +1013,61 @@ mod tests {
         assert_eq!(picker.options[1].label, "Blue");
         assert_eq!(picker.options[1].value, "#3b82f6");
         assert_eq!(picker.selected, 1);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn selected_card_color_is_persisted_and_reloaded() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("work/todo")).unwrap();
+        fs::write(root.join("work/todo/task.md"), "# Task\n").unwrap();
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_selected_project().unwrap();
+
+        app.set_card_color(0, 0, "#38bdf8").unwrap();
+
+        let board = app.board.as_ref().unwrap();
+        assert_eq!(
+            board.lists[app.selected_list].cards[0].color.as_deref(),
+            Some("#38bdf8")
+        );
+        let content = fs::read_to_string(root.join("work/todo/task.md")).unwrap();
+        assert!(content.contains("color: \"#38bdf8\""));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn card_color_picker_uses_board_configured_colors() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("work/todo")).unwrap();
+        fs::write(
+            root.join("config.yaml"),
+            "theme:\n  active_selection: \"#daad52\"\n\ncolors:\n  - label: Red\n    value: \"#ef4444\"\n  - label: Blue\n    value: \"#3b82f6\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("work/todo/task.md"),
+            "---\ncolor: \"#3b82f6\"\n---\n\n# Task\n",
+        )
+        .unwrap();
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_selected_project().unwrap();
+
+        let picker = app.card_color_picker().unwrap();
+
+        assert_eq!(picker.title, "Card Color");
+        assert_eq!(picker.options[0].label, "Red");
+        assert_eq!(picker.options[0].value, "#ef4444");
+        assert_eq!(picker.options[1].label, "Blue");
+        assert_eq!(picker.options[1].value, "#3b82f6");
+        assert_eq!(picker.selected, 1);
+        assert_eq!(
+            picker.target,
+            PickerTarget::CardColor {
+                list_index: 0,
+                card_index: 0,
+            }
+        );
         fs::remove_dir_all(root).ok();
     }
 }

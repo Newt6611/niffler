@@ -64,7 +64,13 @@ pub struct PickerOption {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PickerTarget {
-    ListBorderColor { list_index: usize },
+    ListBorderColor {
+        list_index: usize,
+    },
+    CardColor {
+        list_index: usize,
+        card_index: usize,
+    },
 }
 
 impl Mode {

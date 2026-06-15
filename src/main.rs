@@ -199,6 +199,7 @@ fn handle_normal_key(
         KeyCode::Tab => app.move_list_selection(1),
         KeyCode::BackTab => app.move_list_selection(-1),
         KeyCode::Char('p') => app.toggle_preview()?,
+        KeyCode::Char('c') => start_card_color_picker(app),
         KeyCode::Char('C') => start_list_color_picker(app),
         KeyCode::Char('?') => app.mode = Mode::Help,
         KeyCode::Char('n') => start_new_card(app),
@@ -292,6 +293,14 @@ fn start_list_color_picker(app: &mut App) {
         app.mode = Mode::Picker(picker);
     } else {
         app.status = "No list selected".to_string();
+    }
+}
+
+fn start_card_color_picker(app: &mut App) {
+    if let Some(picker) = app.card_color_picker() {
+        app.mode = Mode::Picker(picker);
+    } else {
+        app.status = "No card selected".to_string();
     }
 }
 
@@ -484,6 +493,12 @@ fn handle_picker_key(app: &mut App, key: KeyEvent, mut picker: PickerState) -> i
                     PickerTarget::ListBorderColor { list_index } => {
                         app.set_list_border_color(list_index, &option.value)?;
                     }
+                    PickerTarget::CardColor {
+                        list_index,
+                        card_index,
+                    } => {
+                        app.set_card_color(list_index, card_index, &option.value)?;
+                    }
                 }
             }
             app.mode = Mode::Normal;
@@ -530,6 +545,7 @@ mod tests {
     use niffler::board::{
         Board, List, default_app_config, default_color_options, default_theme_colors,
     };
+    use niffler::card::Card;
     use std::path::PathBuf;
 
     fn app_with_empty_board() -> App {
@@ -623,6 +639,46 @@ mod tests {
         assert_eq!(
             picker.target,
             PickerTarget::ListBorderColor { list_index: 0 }
+        );
+        assert_eq!(picker.options[picker.selected].value, "#22c55e");
+    }
+
+    #[test]
+    fn lowercase_c_opens_card_color_picker() {
+        let mut app = app_with_empty_board();
+        app.board = Some(Board {
+            name: "ready".to_string(),
+            path: PathBuf::from("/tmp/ready"),
+            theme: default_theme_colors(),
+            colors: default_color_options(),
+            lists: vec![List {
+                name: "TODO".to_string(),
+                path: PathBuf::from("/tmp/ready/todo"),
+                cards: vec![Card {
+                    title: "Task".to_string(),
+                    filename: "task.md".to_string(),
+                    path: PathBuf::from("/tmp/ready/todo/task.md"),
+                    content: String::new(),
+                    position: 1000,
+                    color: Some("#22c55e".to_string()),
+                }],
+                border_color: None,
+            }],
+        });
+        app.selected_cards = vec![0];
+
+        start_card_color_picker(&mut app);
+
+        let Mode::Picker(picker) = app.mode else {
+            panic!("expected picker mode");
+        };
+        assert_eq!(picker.title, "Card Color");
+        assert_eq!(
+            picker.target,
+            PickerTarget::CardColor {
+                list_index: 0,
+                card_index: 0,
+            }
         );
         assert_eq!(picker.options[picker.selected].value, "#22c55e");
     }

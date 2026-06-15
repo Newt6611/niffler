@@ -3,8 +3,8 @@ use crate::board::{
     default_color_options, default_theme_colors,
 };
 use crate::card::{
-    Card, markdown_with_missing_metadata, markdown_with_position, markdown_with_title,
-    markdown_with_updated_at, slug_from_title,
+    Card, markdown_with_color, markdown_with_missing_metadata, markdown_with_position,
+    markdown_with_title, markdown_with_updated_at, slug_from_title,
 };
 use std::fs;
 use std::io;
@@ -168,7 +168,7 @@ pub fn create_project(root: &Path, name: &str) -> io::Result<PathBuf> {
         &path,
         &BoardMetadata {
             name: name.trim().to_string(),
-            show_preview: false,
+            show_preview: true,
             theme: default_theme_colors(),
             colors: default_color_options(),
             lists: Vec::new(),
@@ -352,7 +352,7 @@ pub fn board_preview_setting(board_path: &Path) -> io::Result<bool> {
     sync_board_metadata(board_path)?;
     Ok(read_board_metadata(board_path)?
         .map(|metadata| metadata.show_preview)
-        .unwrap_or(false))
+        .unwrap_or(true))
 }
 
 pub fn set_board_preview(board_path: &Path, show_preview: bool) -> io::Result<()> {
@@ -385,6 +385,11 @@ pub fn set_list_border_color(
     write_board_metadata(board_path, &metadata)
 }
 
+pub fn set_card_color(card_path: &Path, color: &str) -> io::Result<()> {
+    let content = fs::read_to_string(card_path)?;
+    fs::write(card_path, markdown_with_color(&content, color))
+}
+
 fn read_board_metadata(board_path: &Path) -> io::Result<Option<BoardMetadata>> {
     let path = board_path.join(BOARD_METADATA_FILE);
     if !path.exists() {
@@ -397,7 +402,7 @@ fn read_board_metadata(board_path: &Path) -> io::Result<Option<BoardMetadata>> {
 
 fn parse_board_metadata(content: &str) -> Option<BoardMetadata> {
     let mut name = None;
-    let mut show_preview = false;
+    let mut show_preview = true;
     let mut theme = default_theme_colors();
     let mut colors = Vec::new();
     let mut lists = Vec::new();
@@ -741,7 +746,7 @@ fn sync_board_metadata(board_path: &Path) -> io::Result<()> {
             show_preview: existing
                 .as_ref()
                 .map(|metadata| metadata.show_preview)
-                .unwrap_or(false),
+                .unwrap_or(true),
             theme: existing
                 .as_ref()
                 .map(|metadata| metadata.theme.clone())
@@ -944,7 +949,7 @@ mod tests {
             "name: {}",
             root.file_name().unwrap().to_string_lossy()
         )));
-        assert!(metadata.contains("show_preview: false"));
+        assert!(metadata.contains("show_preview: true"));
         assert!(!metadata.contains("theme:"));
         assert!(!metadata.contains("colors:"));
         assert!(metadata.contains("id: doing"));
@@ -1008,7 +1013,7 @@ mod tests {
         load_board(&root).unwrap();
 
         let metadata = fs::read_to_string(root.join(".niffler.yaml")).unwrap();
-        assert!(metadata.contains("show_preview: false"));
+        assert!(metadata.contains("show_preview: true"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1064,6 +1069,25 @@ mod tests {
         assert!(metadata.contains("border_color: \"#22c55e\""));
         let board = load_board(&root).unwrap();
         assert_eq!(board.lists[0].border_color.as_deref(), Some("#22c55e"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn set_card_color_persists_card_frontmatter() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("todo")).unwrap();
+        fs::write(
+            root.join("todo/task.md"),
+            "---\nposition: 1000\ncreated_at: 123\nupdated_at: 124\n---\n\n# Task\n",
+        )
+        .unwrap();
+
+        set_card_color(&root.join("todo/task.md"), "#22c55e").unwrap();
+
+        let content = fs::read_to_string(root.join("todo/task.md")).unwrap();
+        assert!(content.contains("color: \"#22c55e\""));
+        let board = load_board(&root).unwrap();
+        assert_eq!(board.lists[0].cards[0].color.as_deref(), Some("#22c55e"));
         fs::remove_dir_all(root).unwrap();
     }
 

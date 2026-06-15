@@ -16,7 +16,7 @@ The interface is designed to feel like a polished terminal tool: fast navigation
 
 ## Demo
 
-![Niffler demo](demo.gif)
+![Niffler demo](demo.png)
 
 ## Features
 
