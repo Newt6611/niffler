@@ -7,7 +7,7 @@ use niffler::app::App;
 use niffler::config;
 use niffler::editor;
 use niffler::filesystem;
-use niffler::mode::{DeleteTarget, Mode, RenameTarget, Screen};
+use niffler::mode::{DeleteTarget, Mode, PickerState, PickerTarget, RenameTarget, Screen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io;
@@ -128,6 +128,7 @@ fn handle_board_key(
         } => handle_move_key(app, key, target_list, target_position),
         Mode::MoveList { target_position } => handle_move_list_key(app, key, target_position),
         Mode::Help => handle_help_key(app, key),
+        Mode::Picker(picker) => handle_picker_key(app, key, picker),
     }
 }
 
@@ -157,7 +158,7 @@ fn handle_confirm_delete_key(app: &mut App, key: KeyEvent, target: DeleteTarget)
 
 fn handle_create_project_key(app: &mut App, key: KeyEvent, mut input: String) -> io::Result<()> {
     match key.code {
-        KeyCode::Esc => app.mode = Mode::Normal,
+        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Normal,
         KeyCode::Enter => {
             if !input.trim().is_empty() {
                 app.create_project(&input)?;
@@ -198,6 +199,7 @@ fn handle_normal_key(
         KeyCode::Tab => app.move_list_selection(1),
         KeyCode::BackTab => app.move_list_selection(-1),
         KeyCode::Char('p') => app.toggle_preview()?,
+        KeyCode::Char('C') => start_list_color_picker(app),
         KeyCode::Char('?') => app.mode = Mode::Help,
         KeyCode::Char('n') => start_new_card(app),
         KeyCode::Char('N') => {
@@ -275,6 +277,14 @@ fn start_new_card(app: &mut App) {
     app.mode = Mode::Add {
         input: String::new(),
     };
+}
+
+fn start_list_color_picker(app: &mut App) {
+    if let Some(picker) = app.list_border_color_picker() {
+        app.mode = Mode::Picker(picker);
+    } else {
+        app.status = "No list selected".to_string();
+    }
 }
 
 fn handle_create_list_key(app: &mut App, key: KeyEvent, mut input: String) -> io::Result<()> {
@@ -445,6 +455,36 @@ fn handle_move_list_key(
     Ok(())
 }
 
+fn handle_picker_key(app: &mut App, key: KeyEvent, mut picker: PickerState) -> io::Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Normal,
+        KeyCode::Char('k') | KeyCode::Up => {
+            if picker.selected > 0 {
+                picker.selected -= 1;
+            }
+            app.mode = Mode::Picker(picker);
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            if !picker.options.is_empty() {
+                picker.selected = (picker.selected + 1).min(picker.options.len() - 1);
+            }
+            app.mode = Mode::Picker(picker);
+        }
+        KeyCode::Enter => {
+            if let Some(option) = picker.options.get(picker.selected) {
+                match picker.target {
+                    PickerTarget::ListBorderColor { list_index } => {
+                        app.set_list_border_color(list_index, &option.value)?;
+                    }
+                }
+            }
+            app.mode = Mode::Normal;
+        }
+        _ => app.mode = Mode::Picker(picker),
+    }
+    Ok(())
+}
+
 fn edit_selected_card(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
@@ -479,12 +519,15 @@ fn edit_selected_card(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use niffler::board::{Board, List};
+    use niffler::board::{
+        Board, List, default_app_config, default_color_options, default_theme_colors,
+    };
     use std::path::PathBuf;
 
     fn app_with_empty_board() -> App {
         App {
             root: PathBuf::from("/tmp"),
+            config: default_app_config(),
             screen: Screen::Board,
             mode: Mode::Normal,
             show_preview: false,
@@ -492,6 +535,8 @@ mod tests {
             board: Some(Board {
                 name: "empty".to_string(),
                 path: PathBuf::from("/tmp/empty"),
+                theme: default_theme_colors(),
+                colors: default_color_options(),
                 lists: Vec::new(),
             }),
             project_preview: None,
@@ -523,10 +568,13 @@ mod tests {
         app.board = Some(Board {
             name: "ready".to_string(),
             path: PathBuf::from("/tmp/ready"),
+            theme: default_theme_colors(),
+            colors: default_color_options(),
             lists: vec![List {
                 name: "TODO".to_string(),
                 path: PathBuf::from("/tmp/ready/todo"),
                 cards: Vec::new(),
+                border_color: None,
             }],
         });
         app.selected_cards = vec![0];
@@ -539,5 +587,61 @@ mod tests {
                 input: String::new()
             }
         );
+    }
+
+    #[test]
+    fn uppercase_c_opens_list_border_color_picker() {
+        let mut app = app_with_empty_board();
+        app.board = Some(Board {
+            name: "ready".to_string(),
+            path: PathBuf::from("/tmp/ready"),
+            theme: default_theme_colors(),
+            colors: default_color_options(),
+            lists: vec![List {
+                name: "TODO".to_string(),
+                path: PathBuf::from("/tmp/ready/todo"),
+                cards: Vec::new(),
+                border_color: Some("#22c55e".to_string()),
+            }],
+        });
+        app.selected_cards = vec![0];
+
+        start_list_color_picker(&mut app);
+
+        let Mode::Picker(picker) = app.mode else {
+            panic!("expected picker mode");
+        };
+        assert_eq!(picker.title, "List Border Color");
+        assert_eq!(
+            picker.target,
+            PickerTarget::ListBorderColor { list_index: 0 }
+        );
+        assert_eq!(picker.options[picker.selected].value, "#22c55e");
+    }
+
+    #[test]
+    fn q_closes_list_border_color_picker() {
+        let mut app = app_with_empty_board();
+        app.board = Some(Board {
+            name: "ready".to_string(),
+            path: PathBuf::from("/tmp/ready"),
+            theme: default_theme_colors(),
+            colors: default_color_options(),
+            lists: vec![List {
+                name: "TODO".to_string(),
+                path: PathBuf::from("/tmp/ready/todo"),
+                cards: Vec::new(),
+                border_color: None,
+            }],
+        });
+        app.selected_cards = vec![0];
+        start_list_color_picker(&mut app);
+        let Mode::Picker(picker) = app.mode.clone() else {
+            panic!("expected picker mode");
+        };
+
+        handle_picker_key(&mut app, KeyEvent::from(KeyCode::Char('q')), picker).unwrap();
+
+        assert_eq!(app.mode, Mode::Normal);
     }
 }

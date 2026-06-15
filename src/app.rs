@@ -1,12 +1,13 @@
-use crate::board::{Board, Project};
+use crate::board::{AppConfig, Board, Project};
 use crate::card::preview_content;
 use crate::filesystem;
-use crate::mode::{DeleteTarget, Mode, Screen};
+use crate::mode::{DeleteTarget, Mode, PickerOption, PickerState, PickerTarget, Screen};
 use std::io;
 use std::path::PathBuf;
 
 pub struct App {
     pub root: PathBuf,
+    pub config: AppConfig,
     pub screen: Screen,
     pub mode: Mode,
     pub show_preview: bool,
@@ -22,12 +23,14 @@ pub struct App {
 
 impl App {
     pub fn new(root: PathBuf) -> io::Result<Self> {
+        let config = filesystem::load_config(&root)?;
         let projects = filesystem::load_projects(&root)?;
         let project_preview = projects
             .first()
-            .and_then(|project| filesystem::load_board(&project.path).ok());
+            .and_then(|project| filesystem::load_board_with_config(&project.path, &config).ok());
         Ok(Self {
             root,
+            config,
             screen: Screen::Projects,
             mode: Mode::Normal,
             show_preview: false,
@@ -57,13 +60,69 @@ impl App {
         Ok(())
     }
 
+    pub fn list_border_color_picker(&self) -> Option<PickerState> {
+        let board = self.board.as_ref()?;
+        let list = board.lists.get(self.selected_list)?;
+        let selected = list
+            .border_color
+            .as_deref()
+            .and_then(|color| {
+                self.config
+                    .colors
+                    .iter()
+                    .position(|option| option.value.eq_ignore_ascii_case(color))
+            })
+            .unwrap_or(0);
+        Some(PickerState {
+            title: "List Border Color".to_string(),
+            options: self
+                .config
+                .colors
+                .iter()
+                .map(|option| PickerOption {
+                    label: option.label.clone(),
+                    value: option.value.clone(),
+                })
+                .collect(),
+            selected,
+            target: PickerTarget::ListBorderColor {
+                list_index: self.selected_list,
+            },
+        })
+    }
+
+    pub fn set_selected_list_border_color(&mut self, border_color: &str) -> io::Result<()> {
+        self.set_list_border_color(self.selected_list, border_color)
+    }
+
+    pub fn set_list_border_color(
+        &mut self,
+        list_index: usize,
+        border_color: &str,
+    ) -> io::Result<()> {
+        let Some(board) = &self.board else {
+            self.status = "No board selected".to_string();
+            return Ok(());
+        };
+        let Some(list) = board.lists.get(list_index) else {
+            self.status = "No list selected".to_string();
+            return Ok(());
+        };
+        let board_path = board.path.clone();
+        let list_path = list.path.clone();
+        filesystem::set_list_border_color(&board_path, &list_path, Some(border_color))?;
+        self.reload_board()?;
+        self.status = "Updated list border color".to_string();
+        Ok(())
+    }
+
     pub fn open_selected_project(&mut self) -> io::Result<()> {
         let Some(project) = self.projects.get(self.selected_project) else {
             self.status = format!("No projects in {}", self.root.display());
             return Ok(());
         };
 
-        let board = filesystem::load_board(&project.path)?;
+        let board = filesystem::load_board_with_config(&project.path, &self.config)?;
         self.show_preview = filesystem::board_preview_setting(&project.path)?;
         self.selected_list = 0;
         self.selected_cards = vec![0; board.lists.len()];
@@ -96,7 +155,7 @@ impl App {
             return Ok(());
         };
         let path = board.path.clone();
-        let board = filesystem::load_board(&path)?;
+        let board = filesystem::load_board_with_config(&path, &self.config)?;
         self.ensure_selection_shape(board.lists.len());
         self.board = Some(board);
         self.clamp_board_selection();
@@ -141,7 +200,9 @@ impl App {
         self.project_preview = self
             .projects
             .get(self.selected_project)
-            .and_then(|project| filesystem::load_board(&project.path).ok());
+            .and_then(|project| {
+                filesystem::load_board_with_config(&project.path, &self.config).ok()
+            });
     }
 
     pub fn move_card_selection(&mut self, delta: isize) {
@@ -230,7 +291,7 @@ impl App {
             .as_ref()
             .is_some_and(|board| board.path == old_path)
         {
-            self.board = Some(filesystem::load_board(&new_path)?);
+            self.board = Some(filesystem::load_board_with_config(&new_path, &self.config)?);
         }
         self.refresh_projects()?;
         if let Some(index) = self
@@ -846,6 +907,52 @@ mod tests {
         assert!(app.show_preview);
         let metadata = fs::read_to_string(root.join("work/.niffler.yaml")).unwrap();
         assert!(metadata.contains("show_preview: true"));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn selected_list_border_color_is_persisted_and_reloaded() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("work/todo")).unwrap();
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_selected_project().unwrap();
+
+        app.set_selected_list_border_color("#38bdf8").unwrap();
+
+        let board = app.board.as_ref().unwrap();
+        assert_eq!(
+            board.lists[app.selected_list].border_color.as_deref(),
+            Some("#38bdf8")
+        );
+        let metadata = fs::read_to_string(root.join("work/.niffler.yaml")).unwrap();
+        assert!(metadata.contains("border_color: \"#38bdf8\""));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn list_border_color_picker_uses_board_configured_colors() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("work/todo")).unwrap();
+        fs::write(
+            root.join("config.yaml"),
+            "theme:\n  active_selection: \"#daad52\"\n\ncolors:\n  - label: Red\n    value: \"#ef4444\"\n  - label: Blue\n    value: \"#3b82f6\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("work/.niffler.yaml"),
+            "name: Work\nshow_preview: false\n\nlists:\n  - id: todo\n    title: TODO\n    position: 1000\n    border_color: \"#3b82f6\"\n",
+        )
+        .unwrap();
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_selected_project().unwrap();
+
+        let picker = app.list_border_color_picker().unwrap();
+
+        assert_eq!(picker.options[0].label, "Red");
+        assert_eq!(picker.options[0].value, "#ef4444");
+        assert_eq!(picker.options[1].label, "Blue");
+        assert_eq!(picker.options[1].value, "#3b82f6");
+        assert_eq!(picker.selected, 1);
         fs::remove_dir_all(root).ok();
     }
 }

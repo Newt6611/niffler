@@ -8,7 +8,7 @@
   A warm, keyboard-first terminal Kanban board built on plain local Markdown files.
 </p>
 
-Niffler is a local-first TUI Kanban app built with Rust, Crossterm, and Ratatui. It keeps boards as plain directories and cards as ordinary Markdown files, with lightweight `.niffler.yaml` metadata for board settings, list order, and preview state.
+Niffler is a local-first TUI Kanban app built with Rust, Crossterm, and Ratatui. It keeps boards as plain directories and cards as ordinary Markdown files, with lightweight `.niffler.yaml` metadata for board settings, list order, colors, theme, and preview state.
 
 There is no database and no lock-in. Your cards are just `.md` files, so you can move them into another notes app, commit them to Git, sync them with Dropbox/iCloud/Syncthing, publish them, archive them, or edit them with any text editor.
 
@@ -68,15 +68,45 @@ export NIFFLER_HOME=/path/to/boards
 A board looks like this:
 
 ```text
-my-board/
-  .niffler.yaml
-  todo/
-    first-card.md
-  done/
-    shipped.md
+~/.niffler/
+  config.yaml
+  my-board/
+    .niffler.yaml
+    todo/
+      first-card.md
+    done/
+      shipped.md
 ```
 
 Cards are regular Markdown files. Niffler only adds small frontmatter fields such as `position`, `created_at`, and `updated_at`.
+
+Global display settings live in `config.yaml`. Niffler writes default theme and picker colors there, so every board shares the same palette:
+
+```yaml
+theme:
+  active_selection: "#daad52"
+  selected_text: "black"
+  panel: "#976f3a"
+
+colors:
+  - label: Default
+    value: "#3c3c3c"
+  - label: Red
+    value: "#ef4444"
+```
+
+Board-local settings stay in each board's `.niffler.yaml`:
+
+```yaml
+name: My Board
+show_preview: false
+
+lists:
+  - id: todo
+    title: Todo
+    position: 1000
+    border_color: "#ef4444"
+```
 
 That means you can take a card out of Niffler at any time:
 
@@ -129,6 +159,7 @@ export NIFFLER_EDITOR="code --wait"
 | `e` | Edit card |
 | `m` | Move card |
 | `M` | Move list |
+| `C` | Change list border color |
 | `r` | Rename card |
 | `R` | Rename list |
 | `d` | Delete card |

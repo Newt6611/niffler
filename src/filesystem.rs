@@ -1,4 +1,7 @@
-use crate::board::{Board, List, Project};
+use crate::board::{
+    AppConfig, Board, ColorOption, List, Project, ThemeColors, default_app_config,
+    default_color_options, default_theme_colors,
+};
 use crate::card::{
     Card, markdown_with_missing_metadata, markdown_with_position, markdown_with_title,
     markdown_with_updated_at, slug_from_title,
@@ -8,12 +11,15 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const BOARD_METADATA_FILE: &str = ".niffler.yaml";
+const CONFIG_FILE: &str = "config.yaml";
 const POSITION_STEP: i64 = 1000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct BoardMetadata {
     name: String,
     show_preview: bool,
+    theme: ThemeColors,
+    colors: Vec<ColorOption>,
     lists: Vec<ListMetadata>,
 }
 
@@ -22,6 +28,7 @@ struct ListMetadata {
     id: String,
     title: String,
     position: i64,
+    border_color: Option<String>,
 }
 
 pub fn load_projects(root: &Path) -> io::Result<Vec<Project>> {
@@ -43,7 +50,24 @@ pub fn load_projects(root: &Path) -> io::Result<Vec<Project>> {
     Ok(projects)
 }
 
+pub fn load_config(root: &Path) -> io::Result<AppConfig> {
+    fs::create_dir_all(root)?;
+    let path = root.join(CONFIG_FILE);
+    if !path.exists() {
+        let config = default_app_config();
+        write_config(root, &config)?;
+        return Ok(config);
+    }
+
+    let content = fs::read_to_string(path)?;
+    Ok(parse_config(&content))
+}
+
 pub fn load_board(path: &Path) -> io::Result<Board> {
+    load_board_with_config(path, &default_app_config())
+}
+
+pub fn load_board_with_config(path: &Path, config: &AppConfig) -> io::Result<Board> {
     sync_board_metadata(path)?;
     let metadata = read_board_metadata(path)?;
     let mut lists = Vec::new();
@@ -94,11 +118,16 @@ pub fn load_board(path: &Path) -> io::Result<Board> {
             .and_then(|metadata| metadata.lists.iter().find(|list| list.id == id))
             .map(|list| list.title.clone())
             .unwrap_or_else(|| id.clone());
+        let border_color = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.lists.iter().find(|list| list.id == id))
+            .and_then(|list| list.border_color.clone());
 
         lists.push(List {
             name: title,
             path: list_path,
             cards,
+            border_color,
         });
     }
 
@@ -110,13 +139,16 @@ pub fn load_board(path: &Path) -> io::Result<Board> {
 
     Ok(Board {
         name: metadata
-            .map(|metadata| metadata.name)
+            .as_ref()
+            .map(|metadata| metadata.name.clone())
             .or_else(|| {
                 path.file_name()
                     .map(|name| name.to_string_lossy().to_string())
             })
             .unwrap_or_else(|| "Board".to_string()),
         path: path.to_path_buf(),
+        theme: config.theme.clone(),
+        colors: config.colors.clone(),
         lists,
     })
 }
@@ -137,6 +169,8 @@ pub fn create_project(root: &Path, name: &str) -> io::Result<PathBuf> {
         &BoardMetadata {
             name: name.trim().to_string(),
             show_preview: false,
+            theme: default_theme_colors(),
+            colors: default_color_options(),
             lists: Vec::new(),
         },
     )?;
@@ -330,6 +364,27 @@ pub fn set_board_preview(board_path: &Path, show_preview: bool) -> io::Result<()
     write_board_metadata(board_path, &metadata)
 }
 
+pub fn set_list_border_color(
+    board_path: &Path,
+    list_path: &Path,
+    border_color: Option<&str>,
+) -> io::Result<()> {
+    sync_board_metadata(board_path)?;
+    let Some(mut metadata) = read_board_metadata(board_path)? else {
+        return Ok(());
+    };
+    let Some(list_id) = list_path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+    else {
+        return Ok(());
+    };
+    if let Some(list) = metadata.lists.iter_mut().find(|list| list.id == list_id) {
+        list.border_color = border_color.map(str::to_string);
+    }
+    write_board_metadata(board_path, &metadata)
+}
+
 fn read_board_metadata(board_path: &Path) -> io::Result<Option<BoardMetadata>> {
     let path = board_path.join(BOARD_METADATA_FILE);
     if !path.exists() {
@@ -343,11 +398,18 @@ fn read_board_metadata(board_path: &Path) -> io::Result<Option<BoardMetadata>> {
 fn parse_board_metadata(content: &str) -> Option<BoardMetadata> {
     let mut name = None;
     let mut show_preview = false;
+    let mut theme = default_theme_colors();
+    let mut colors = Vec::new();
     let mut lists = Vec::new();
     let mut current: Option<ListMetadata> = None;
+    let mut current_color: Option<ColorOption> = None;
+    let mut section = MetadataSection::None;
 
     for line in content.lines() {
         let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
         if let Some(value) = trimmed.strip_prefix("name:") {
             name = Some(value.trim().to_string());
             continue;
@@ -356,40 +418,139 @@ fn parse_board_metadata(content: &str) -> Option<BoardMetadata> {
             show_preview = value.trim().eq_ignore_ascii_case("true");
             continue;
         }
-
-        if let Some(value) = trimmed.strip_prefix("- id:") {
-            if let Some(list) = current.take() {
-                lists.push(list);
-            }
-            let id = value.trim().to_string();
-            current = Some(ListMetadata {
-                title: id.clone(),
-                id,
-                position: i64::MAX,
-            });
+        if trimmed == "theme:" {
+            push_current_metadata_items(&mut current, &mut lists, &mut current_color, &mut colors);
+            section = MetadataSection::Theme;
+            continue;
+        }
+        if trimmed == "colors:" {
+            push_current_metadata_items(&mut current, &mut lists, &mut current_color, &mut colors);
+            section = MetadataSection::Colors;
+            continue;
+        }
+        if trimmed == "lists:" {
+            push_current_metadata_items(&mut current, &mut lists, &mut current_color, &mut colors);
+            section = MetadataSection::Lists;
             continue;
         }
 
-        if let Some(list) = current.as_mut() {
-            if let Some(value) = trimmed.strip_prefix("title:") {
-                list.title = value.trim().to_string();
-            } else if let Some(value) = trimmed.strip_prefix("position:") {
-                if let Ok(position) = value.trim().parse() {
-                    list.position = position;
+        match section {
+            MetadataSection::Theme => {
+                if let Some((key, value)) = trimmed.split_once(':') {
+                    set_theme_color(&mut theme, key.trim(), unquote_yaml_value(value.trim()));
+                }
+            }
+            MetadataSection::Colors => {
+                if let Some(value) = trimmed.strip_prefix("- label:") {
+                    if let Some(color) = current_color.take() {
+                        colors.push(color);
+                    }
+                    current_color = Some(ColorOption {
+                        label: unquote_yaml_value(value.trim()).to_string(),
+                        value: String::new(),
+                    });
+                } else if let Some(value) = trimmed.strip_prefix("value:")
+                    && let Some(color) = current_color.as_mut()
+                {
+                    color.value = unquote_yaml_value(value.trim()).to_string();
+                }
+            }
+            MetadataSection::Lists | MetadataSection::None => {
+                if let Some(value) = trimmed.strip_prefix("- id:") {
+                    if let Some(list) = current.take() {
+                        lists.push(list);
+                    }
+                    let id = value.trim().to_string();
+                    current = Some(ListMetadata {
+                        title: id.clone(),
+                        id,
+                        position: i64::MAX,
+                        border_color: None,
+                    });
+                    continue;
+                }
+
+                if let Some(list) = current.as_mut() {
+                    if let Some(value) = trimmed.strip_prefix("title:") {
+                        list.title = value.trim().to_string();
+                    } else if let Some(value) = trimmed.strip_prefix("position:") {
+                        if let Ok(position) = value.trim().parse() {
+                            list.position = position;
+                        }
+                    } else if let Some(value) = trimmed.strip_prefix("border_color:") {
+                        list.border_color = Some(unquote_yaml_value(value.trim()).to_string());
+                    }
                 }
             }
         }
     }
 
-    if let Some(list) = current {
-        lists.push(list);
-    }
+    push_current_metadata_items(&mut current, &mut lists, &mut current_color, &mut colors);
+    let colors = if colors.is_empty() {
+        default_color_options()
+    } else {
+        colors
+    };
 
     Some(BoardMetadata {
         name: name?,
         show_preview,
+        theme,
+        colors,
         lists,
     })
+}
+
+fn parse_config(content: &str) -> AppConfig {
+    let mut theme = default_theme_colors();
+    let mut colors = Vec::new();
+    let mut current_color: Option<ColorOption> = None;
+    let mut section = MetadataSection::None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed == "theme:" {
+            push_current_color(&mut current_color, &mut colors);
+            section = MetadataSection::Theme;
+            continue;
+        }
+        if trimmed == "colors:" {
+            push_current_color(&mut current_color, &mut colors);
+            section = MetadataSection::Colors;
+            continue;
+        }
+
+        match section {
+            MetadataSection::Theme => {
+                if let Some((key, value)) = trimmed.split_once(':') {
+                    set_theme_color(&mut theme, key.trim(), unquote_yaml_value(value.trim()));
+                }
+            }
+            MetadataSection::Colors => {
+                if let Some(value) = trimmed.strip_prefix("- label:") {
+                    push_current_color(&mut current_color, &mut colors);
+                    current_color = Some(ColorOption {
+                        label: unquote_yaml_value(value.trim()).to_string(),
+                        value: String::new(),
+                    });
+                } else if let Some(value) = trimmed.strip_prefix("value:")
+                    && let Some(color) = current_color.as_mut()
+                {
+                    color.value = unquote_yaml_value(value.trim()).to_string();
+                }
+            }
+            MetadataSection::Lists | MetadataSection::None => {}
+        }
+    }
+
+    push_current_color(&mut current_color, &mut colors);
+    if colors.is_empty() {
+        colors = default_color_options();
+    }
+    AppConfig { theme, colors }
 }
 
 fn write_board_metadata(board_path: &Path, metadata: &BoardMetadata) -> io::Result<()> {
@@ -399,11 +560,115 @@ fn write_board_metadata(board_path: &Path, metadata: &BoardMetadata) -> io::Resu
     );
     for list in &metadata.lists {
         content.push_str(&format!(
-            "  - id: {}\n    title: {}\n    position: {}\n\n",
+            "  - id: {}\n    title: {}\n    position: {}\n",
             list.id, list.title, list.position
         ));
+        if let Some(border_color) = &list.border_color {
+            content.push_str(&format!("    border_color: \"{}\"\n", border_color));
+        }
+        content.push('\n');
     }
     fs::write(board_path.join(BOARD_METADATA_FILE), content)
+}
+
+fn write_config(root: &Path, config: &AppConfig) -> io::Result<()> {
+    let mut content = String::from("theme:\n");
+    write_theme_metadata(&mut content, &config.theme);
+    content.push_str("\ncolors:\n");
+    for color in &config.colors {
+        content.push_str(&format!(
+            "  - label: {}\n    value: \"{}\"\n",
+            color.label, color.value
+        ));
+    }
+    fs::write(root.join(CONFIG_FILE), content)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MetadataSection {
+    None,
+    Theme,
+    Colors,
+    Lists,
+}
+
+fn push_current_metadata_items(
+    current_list: &mut Option<ListMetadata>,
+    lists: &mut Vec<ListMetadata>,
+    current_color: &mut Option<ColorOption>,
+    colors: &mut Vec<ColorOption>,
+) {
+    if let Some(list) = current_list.take() {
+        lists.push(list);
+    }
+    if let Some(color) = current_color.take()
+        && !color.label.is_empty()
+        && !color.value.is_empty()
+    {
+        colors.push(color);
+    }
+}
+
+fn push_current_color(current_color: &mut Option<ColorOption>, colors: &mut Vec<ColorOption>) {
+    if let Some(color) = current_color.take()
+        && !color.label.is_empty()
+        && !color.value.is_empty()
+    {
+        colors.push(color);
+    }
+}
+
+fn set_theme_color(theme: &mut ThemeColors, key: &str, value: &str) {
+    let target = match key {
+        "active_selection" => &mut theme.active_selection,
+        "header" => &mut theme.header,
+        "success" => &mut theme.success,
+        "inactive" => &mut theme.inactive,
+        "unfocused_panel_border" => &mut theme.unfocused_panel_border,
+        "text" => &mut theme.text,
+        "muted" => &mut theme.muted,
+        "selected_text" => &mut theme.selected_text,
+        "shell" => &mut theme.shell,
+        "panel" => &mut theme.panel,
+        "preview" => &mut theme.preview,
+        "modal" => &mut theme.modal,
+        "move_target" => &mut theme.move_target,
+        "danger" => &mut theme.danger,
+        _ => return,
+    };
+    *target = value.to_string();
+}
+
+fn write_theme_metadata(content: &mut String, theme: &ThemeColors) {
+    content.push_str(&format!(
+        "  active_selection: \"{}\"\n  header: \"{}\"\n  success: \"{}\"\n  inactive: \"{}\"\n  unfocused_panel_border: \"{}\"\n  text: \"{}\"\n  muted: \"{}\"\n  selected_text: \"{}\"\n  shell: \"{}\"\n  panel: \"{}\"\n  preview: \"{}\"\n  modal: \"{}\"\n  move_target: \"{}\"\n  danger: \"{}\"\n",
+        theme.active_selection,
+        theme.header,
+        theme.success,
+        theme.inactive,
+        theme.unfocused_panel_border,
+        theme.text,
+        theme.muted,
+        theme.selected_text,
+        theme.shell,
+        theme.panel,
+        theme.preview,
+        theme.modal,
+        theme.move_target,
+        theme.danger
+    ));
+}
+
+fn unquote_yaml_value(value: &str) -> &str {
+    value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+        })
+        .unwrap_or(value)
 }
 
 fn unique_path_except(
@@ -461,6 +726,7 @@ fn sync_board_metadata(board_path: &Path) -> io::Result<()> {
                 title: id.clone(),
                 id,
                 position: max_position,
+                border_color: None,
             });
         }
     }
@@ -478,6 +744,14 @@ fn sync_board_metadata(board_path: &Path) -> io::Result<()> {
                 .as_ref()
                 .map(|metadata| metadata.show_preview)
                 .unwrap_or(false),
+            theme: existing
+                .as_ref()
+                .map(|metadata| metadata.theme.clone())
+                .unwrap_or_else(default_theme_colors),
+            colors: existing
+                .as_ref()
+                .map(|metadata| metadata.colors.clone())
+                .unwrap_or_else(default_color_options),
             lists,
         },
     )
@@ -673,9 +947,52 @@ mod tests {
             root.file_name().unwrap().to_string_lossy()
         )));
         assert!(metadata.contains("show_preview: false"));
+        assert!(!metadata.contains("theme:"));
+        assert!(!metadata.contains("colors:"));
         assert!(metadata.contains("id: doing"));
         assert!(metadata.contains("id: todo"));
         assert_eq!(board.lists.len(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn load_config_creates_root_config_yaml_with_theme_and_picker_colors() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+
+        let config = load_config(&root).unwrap();
+
+        assert_eq!(config.theme.active_selection, "#daad52");
+        assert_eq!(config.theme.selected_text, "black");
+        assert_eq!(config.colors[0].label, "Default");
+        assert_eq!(config.colors[0].value, "#3c3c3c");
+        let content = fs::read_to_string(root.join("config.yaml")).unwrap();
+        assert!(content.contains("theme:"));
+        assert!(content.contains("active_selection: \"#daad52\""));
+        assert!(content.contains("colors:"));
+        assert!(content.contains("label: Default"));
+        assert!(content.contains("value: \"#3c3c3c\""));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn load_config_reads_custom_root_theme_and_picker_colors() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("config.yaml"),
+            "theme:\n  active_selection: \"#010203\"\n  selected_text: \"black\"\n\ncolors:\n  - label: Crimson\n    value: \"#dc2626\"\n  - label: Ocean\n    value: \"#0284c7\"\n",
+        )
+        .unwrap();
+
+        let config = load_config(&root).unwrap();
+
+        assert_eq!(config.theme.active_selection, "#010203");
+        assert_eq!(config.theme.selected_text, "black");
+        assert_eq!(config.colors[0].label, "Crimson");
+        assert_eq!(config.colors[0].value, "#dc2626");
+        assert_eq!(config.colors[1].label, "Ocean");
+        assert_eq!(config.colors[1].value, "#0284c7");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -713,6 +1030,41 @@ mod tests {
         assert!(!board_preview_setting(&root).unwrap());
         let metadata = fs::read_to_string(root.join(".niffler.yaml")).unwrap();
         assert!(metadata.contains("show_preview: false"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn load_board_reads_list_border_color_from_metadata() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("todo")).unwrap();
+        fs::write(
+            root.join(".niffler.yaml"),
+            "name: Work Board\nshow_preview: false\n\nlists:\n  - id: todo\n    title: TODO\n    position: 1000\n    border_color: \"#a855f7\"\n",
+        )
+        .unwrap();
+
+        let board = load_board(&root).unwrap();
+
+        assert_eq!(board.lists[0].border_color.as_deref(), Some("#a855f7"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn set_list_border_color_persists_selected_list_metadata() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("todo")).unwrap();
+        fs::write(
+            root.join(".niffler.yaml"),
+            "name: Work Board\nshow_preview: false\n\nlists:\n  - id: todo\n    title: TODO\n    position: 1000\n",
+        )
+        .unwrap();
+
+        set_list_border_color(&root, &root.join("todo"), Some("#22c55e")).unwrap();
+
+        let metadata = fs::read_to_string(root.join(".niffler.yaml")).unwrap();
+        assert!(metadata.contains("border_color: \"#22c55e\""));
+        let board = load_board(&root).unwrap();
+        assert_eq!(board.lists[0].border_color.as_deref(), Some("#22c55e"));
         fs::remove_dir_all(root).unwrap();
     }
 

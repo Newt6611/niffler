@@ -31,6 +31,7 @@ pub enum Mode {
     ConfirmDelete {
         target: DeleteTarget,
     },
+    Picker(PickerState),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +48,25 @@ pub enum RenameTarget {
     Card,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PickerState {
+    pub title: String,
+    pub options: Vec<PickerOption>,
+    pub selected: usize,
+    pub target: PickerTarget,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PickerOption {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PickerTarget {
+    ListBorderColor { list_index: usize },
+}
+
 impl Mode {
     pub fn name(&self) -> &'static str {
         match self {
@@ -59,6 +79,7 @@ impl Mode {
             Self::Move { .. } => "Move",
             Self::MoveList { .. } => "Move List",
             Self::ConfirmDelete { .. } => "Confirm",
+            Self::Picker(_) => "Picker",
         }
     }
 }

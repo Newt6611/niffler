@@ -1,5 +1,6 @@
 use crate::app::App;
-use crate::mode::{DeleteTarget, Mode, RenameTarget, Screen};
+use crate::board::{Board, ThemeColors, default_theme_colors};
+use crate::mode::{DeleteTarget, Mode, PickerOption, PickerState, RenameTarget, Screen};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -10,36 +11,82 @@ use ratatui::widgets::{
 use std::ops::Range;
 
 const HELP_CLOSE_LINE: &str = "? / Esc / q  Close help";
-const ACTIVE_SELECTION: Color = Color::Rgb(218, 173, 82);
-const HEADER: Color = Color::Rgb(236, 196, 91);
-const SUCCESS: Color = Color::Rgb(190, 143, 66);
-const INACTIVE: Color = Color::Rgb(88, 84, 76);
-const UNFOCUSED_PANEL_BORDER: Color = Color::Rgb(60, 60, 60);
-const TEXT: Color = Color::Rgb(229, 219, 199);
-const MUTED: Color = Color::Rgb(154, 142, 122);
-const SELECTED_TEXT: Color = Color::Black;
-const SHELL: Color = Color::Rgb(122, 88, 42);
-const PANEL: Color = Color::Rgb(151, 111, 58);
-const PREVIEW: Color = Color::Rgb(176, 128, 62);
-const MODAL: Color = Color::Rgb(244, 207, 104);
-const MOVE_TARGET: Color = Color::Rgb(211, 151, 67);
-const DANGER: Color = Color::Rgb(198, 93, 74);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct UiTheme {
+    active_selection: Color,
+    header: Color,
+    success: Color,
+    inactive: Color,
+    unfocused_panel_border: Color,
+    text: Color,
+    muted: Color,
+    selected_text: Color,
+    shell: Color,
+    panel: Color,
+    preview: Color,
+    modal: Color,
+    move_target: Color,
+    danger: Color,
+}
+
+impl UiTheme {
+    fn from_config(config: &ThemeColors) -> Self {
+        let defaults = default_theme_colors();
+        Self {
+            active_selection: color_from_config(
+                &config.active_selection,
+                &defaults.active_selection,
+            ),
+            header: color_from_config(&config.header, &defaults.header),
+            success: color_from_config(&config.success, &defaults.success),
+            inactive: color_from_config(&config.inactive, &defaults.inactive),
+            unfocused_panel_border: color_from_config(
+                &config.unfocused_panel_border,
+                &defaults.unfocused_panel_border,
+            ),
+            text: color_from_config(&config.text, &defaults.text),
+            muted: color_from_config(&config.muted, &defaults.muted),
+            selected_text: color_from_config(&config.selected_text, &defaults.selected_text),
+            shell: color_from_config(&config.shell, &defaults.shell),
+            panel: color_from_config(&config.panel, &defaults.panel),
+            preview: color_from_config(&config.preview, &defaults.preview),
+            modal: color_from_config(&config.modal, &defaults.modal),
+            move_target: color_from_config(&config.move_target, &defaults.move_target),
+            danger: color_from_config(&config.danger, &defaults.danger),
+        }
+    }
+}
+
+fn app_theme(app: &App) -> UiTheme {
+    UiTheme::from_config(&app.config.theme)
+}
+
+fn board_theme(board: &Board) -> UiTheme {
+    UiTheme::from_config(&board.theme)
+}
+
+#[cfg(test)]
+fn default_ui_theme() -> UiTheme {
+    UiTheme::from_config(&default_theme_colors())
+}
 
 pub fn render(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
+    let theme = app_theme(app);
     let mut shell = Block::default()
         .borders(Borders::ALL)
-        .style(Style::default().fg(SHELL))
+        .style(Style::default().fg(theme.shell))
         .title_bottom(
-            status_bar_line(&instruction_line(app))
+            status_bar_line(&instruction_line(app), &theme)
                 .right_aligned()
-                .style(Style::default().fg(MUTED)),
+                .style(Style::default().fg(theme.muted)),
         );
     if !app.status.is_empty() {
         shell = shell.title_bottom(
             Line::from(app.status.clone())
                 .left_aligned()
-                .style(Style::default().fg(INACTIVE)),
+                .style(Style::default().fg(theme.inactive)),
         );
     }
     let inner = area.inner(Margin {
@@ -53,29 +100,50 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(inner);
 
-    render_header(frame, app, layout[0]);
+    render_header(frame, app, layout[0], &theme);
     match app.screen {
-        Screen::Projects => render_projects(frame, app, layout[1]),
-        Screen::Board => render_board(frame, app, layout[1]),
+        Screen::Projects => render_projects(frame, app, layout[1], &theme),
+        Screen::Board => render_board(frame, app, layout[1], &theme),
     }
 
     if has_modal(&app.mode) {
-        dim_background(frame, area);
+        dim_background(frame, area, &theme);
     }
 
     match &app.mode {
-        Mode::CreateProject { input } => {
-            render_input_popup(frame, "New Board", "Board name", input, "Create", area)
+        Mode::CreateProject { input } => render_input_popup(
+            frame,
+            "New Board",
+            "Board name",
+            input,
+            "Create",
+            area,
+            &theme,
+        ),
+        Mode::CreateList { input } => render_input_popup(
+            frame,
+            "New List",
+            "List name",
+            input,
+            "Create",
+            area,
+            &theme,
+        ),
+        Mode::Add { input } => render_input_popup(
+            frame,
+            "New Card",
+            "Card title",
+            input,
+            "Create",
+            area,
+            &theme,
+        ),
+        Mode::Rename { target, input } => render_rename_popup(frame, *target, input, area, &theme),
+        Mode::ConfirmDelete { target } => {
+            render_delete_confirmation(frame, app, *target, area, &theme)
         }
-        Mode::CreateList { input } => {
-            render_input_popup(frame, "New List", "List name", input, "Create", area)
-        }
-        Mode::Add { input } => {
-            render_input_popup(frame, "New Card", "Card title", input, "Create", area)
-        }
-        Mode::Rename { target, input } => render_rename_popup(frame, *target, input, area),
-        Mode::ConfirmDelete { target } => render_delete_confirmation(frame, app, *target, area),
-        Mode::Help => render_help_popup(frame, app.screen, area),
+        Mode::Help => render_help_popup(frame, app.screen, area, &theme),
+        Mode::Picker(picker) => render_picker_popup(frame, picker, area, &theme),
         _ => {}
     }
 }
@@ -89,10 +157,11 @@ fn has_modal(mode: &Mode) -> bool {
             | Mode::Rename { .. }
             | Mode::ConfirmDelete { .. }
             | Mode::Help
+            | Mode::Picker(_)
     )
 }
 
-fn dim_background(frame: &mut Frame<'_>, area: Rect) {
+fn dim_background(frame: &mut Frame<'_>, area: Rect, theme: &UiTheme) {
     for x in area.left()..area.right() {
         for y in area.top()..area.bottom() {
             let Some(cell) = frame.buffer_mut().cell_mut((x, y)) else {
@@ -102,7 +171,7 @@ fn dim_background(frame: &mut Frame<'_>, area: Rect) {
             cell.set_style(
                 style.patch(
                     Style::default()
-                        .fg(INACTIVE)
+                        .fg(theme.inactive)
                         .bg(Color::Black)
                         .add_modifier(Modifier::DIM),
                 ),
@@ -111,7 +180,7 @@ fn dim_background(frame: &mut Frame<'_>, area: Rect) {
     }
 }
 
-fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect, theme: &UiTheme) {
     let board_title = app
         .board
         .as_ref()
@@ -123,22 +192,22 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
     let tabs = Tabs::new(vec!["Boards".to_string(), board_title])
         .select(selected)
-        .divider(Span::styled(" . ", Style::default().fg(INACTIVE)))
-        .style(Style::default().fg(MUTED))
+        .divider(Span::styled(" . ", Style::default().fg(theme.inactive)))
+        .style(Style::default().fg(theme.muted))
         .highlight_style(
             Style::default()
-                .fg(ACTIVE_SELECTION)
+                .fg(theme.active_selection)
                 .add_modifier(Modifier::BOLD),
         );
     frame.render_widget(tabs, area);
 }
 
-fn render_projects(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn render_projects(frame: &mut Frame<'_>, app: &App, area: Rect, theme: &UiTheme) {
     if app.projects.is_empty() {
         let paragraph =
             Paragraph::new("No boards found. Press n to create one, or create a directory.")
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(INACTIVE));
+                .style(Style::default().fg(theme.inactive));
         frame.render_widget(paragraph, area);
         return;
     }
@@ -152,15 +221,15 @@ fn render_projects(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .projects
         .iter()
         .map(|project| {
-            ListItem::new(Text::from(project.name.clone())).style(Style::default().fg(TEXT))
+            ListItem::new(Text::from(project.name.clone())).style(Style::default().fg(theme.text))
         })
         .collect::<Vec<_>>();
 
     let list = List::new(items)
         .highlight_style(
             Style::default()
-                .fg(SELECTED_TEXT)
-                .bg(ACTIVE_SELECTION)
+                .fg(theme.selected_text)
+                .bg(theme.active_selection)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("> ")
@@ -168,7 +237,7 @@ fn render_projects(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Block::default()
                 .title(" Boards ")
                 .borders(Borders::ALL)
-                .style(Style::default().fg(PANEL)),
+                .style(Style::default().fg(theme.panel)),
         );
     let mut state = ListState::default().with_selected(Some(app.selected_project));
     frame.render_stateful_widget(list, layout[0], &mut state);
@@ -176,23 +245,23 @@ fn render_projects(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let preview = app
         .project_preview
         .as_ref()
-        .map(board_details_text)
+        .map(|board| board_details_text(board, &board_theme(board)))
         .unwrap_or_else(|| {
             Text::from(Line::styled(
                 "No board selected",
-                Style::default().fg(INACTIVE),
+                Style::default().fg(theme.inactive),
             ))
         });
     let preview = Paragraph::new(preview).wrap(Wrap { trim: false }).block(
         Block::default()
             .title(" Board Details ")
             .borders(Borders::ALL)
-            .style(Style::default().fg(PREVIEW)),
+            .style(Style::default().fg(theme.preview)),
     );
     frame.render_widget(preview, layout[1]);
 }
 
-fn board_details_text(board: &crate::board::Board) -> Text<'static> {
+fn board_details_text(board: &crate::board::Board, theme: &UiTheme) -> Text<'static> {
     let card_count = board
         .lists
         .iter()
@@ -202,7 +271,7 @@ fn board_details_text(board: &crate::board::Board) -> Text<'static> {
         Line::styled(
             board.name.clone(),
             Style::default()
-                .fg(ACTIVE_SELECTION)
+                .fg(theme.active_selection)
                 .add_modifier(Modifier::BOLD),
         ),
         Line::styled(
@@ -211,13 +280,16 @@ fn board_details_text(board: &crate::board::Board) -> Text<'static> {
                 count_label(board.lists.len(), "list"),
                 count_label(card_count, "card")
             ),
-            Style::default().fg(INACTIVE),
+            Style::default().fg(theme.inactive),
         ),
         Line::from(""),
     ];
 
     if board.lists.is_empty() {
-        lines.push(Line::styled("No lists yet", Style::default().fg(INACTIVE)));
+        lines.push(Line::styled(
+            "No lists yet",
+            Style::default().fg(theme.inactive),
+        ));
         return Text::from(lines);
     }
 
@@ -225,17 +297,22 @@ fn board_details_text(board: &crate::board::Board) -> Text<'static> {
         lines.push(Line::from(vec![
             Span::styled(
                 list.name.clone(),
-                Style::default().fg(SUCCESS).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.success)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("  {}", count_label(list.cards.len(), "card")),
-                Style::default().fg(INACTIVE),
+                Style::default().fg(theme.inactive),
             ),
         ]));
         if list.cards.is_empty() {
-            lines.push(Line::styled("  No cards", Style::default().fg(INACTIVE)));
+            lines.push(Line::styled(
+                "  No cards",
+                Style::default().fg(theme.inactive),
+            ));
         } else {
-            lines.extend(card_titles(&list.cards));
+            lines.extend(card_titles(&list.cards, theme));
         }
         lines.push(Line::from(""));
     }
@@ -243,11 +320,14 @@ fn board_details_text(board: &crate::board::Board) -> Text<'static> {
     Text::from(lines)
 }
 
-fn card_titles(cards: &[crate::card::Card]) -> impl Iterator<Item = Line<'static>> + '_ {
+fn card_titles<'a>(
+    cards: &'a [crate::card::Card],
+    theme: &'a UiTheme,
+) -> impl Iterator<Item = Line<'static>> + 'a {
     cards.iter().map(|card| {
         Line::from(vec![
             Span::raw("  - "),
-            Span::styled(card.title.clone(), Style::default().fg(TEXT)),
+            Span::styled(card.title.clone(), Style::default().fg(theme.text)),
         ])
     })
 }
@@ -276,29 +356,40 @@ fn board_header_text(board: &crate::board::Board, mode_label: &str) -> String {
     )
 }
 
-fn board_header_line(board: &crate::board::Board, mode_label: &str) -> Line<'static> {
+fn board_header_line(
+    board: &crate::board::Board,
+    mode_label: &str,
+    theme: &UiTheme,
+) -> Line<'static> {
     let card_count = board
         .lists
         .iter()
         .map(|list| list.cards.len())
         .sum::<usize>();
     Line::from(vec![
-        Span::styled("✦ ", Style::default().fg(HEADER)),
+        Span::styled("✦ ", Style::default().fg(theme.header)),
         Span::styled(
             board.name.clone(),
-            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.header)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("   ·  ", Style::default().fg(INACTIVE)),
+        Span::styled("   ·  ", Style::default().fg(theme.inactive)),
         Span::styled(
             count_label(board.lists.len(), "list"),
-            Style::default().fg(TEXT),
+            Style::default().fg(theme.text),
         ),
-        Span::styled("   ·  ", Style::default().fg(INACTIVE)),
-        Span::styled(count_label(card_count, "card"), Style::default().fg(TEXT)),
+        Span::styled("   ·  ", Style::default().fg(theme.inactive)),
+        Span::styled(
+            count_label(card_count, "card"),
+            Style::default().fg(theme.text),
+        ),
         Span::raw("      "),
         Span::styled(
             mode_label.to_uppercase(),
-            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::BOLD),
         ),
     ])
 }
@@ -335,7 +426,7 @@ fn board_content_layout(area: Rect, show_preview: bool) -> (Rect, Option<Rect>) 
 
 #[cfg(test)]
 fn board_details_plain_text(board: &crate::board::Board) -> String {
-    board_details_text(board)
+    board_details_text(board, &board_theme(board))
         .lines
         .into_iter()
         .map(|line| {
@@ -348,7 +439,7 @@ fn board_details_plain_text(board: &crate::board::Board) -> String {
         .join("\n")
 }
 
-fn render_board(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn render_board(frame: &mut Frame<'_>, app: &App, area: Rect, theme: &UiTheme) {
     let Some(board) = &app.board else {
         return;
     };
@@ -359,7 +450,7 @@ fn render_board(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .constraints([Constraint::Length(1), Constraint::Min(1)])
             .split(area);
         frame.render_widget(
-            Paragraph::new(board_header_line(board, app.mode.name())),
+            Paragraph::new(board_header_line(board, app.mode.name(), theme)),
             layout[0],
         );
         layout[1]
@@ -382,13 +473,13 @@ fn render_board(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     if board.lists.is_empty() {
         let paragraph = Paragraph::new("No lists found. Press n to create one.")
-            .style(Style::default().fg(INACTIVE))
+            .style(Style::default().fg(theme.inactive))
             .alignment(Alignment::Center)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" Board ")
-                    .style(Style::default().fg(PANEL)),
+                    .style(Style::default().fg(theme.panel)),
             );
         frame.render_widget(paragraph, content_area);
         return;
@@ -435,7 +526,13 @@ fn render_board(frame: &mut Frame<'_>, app: &App, area: Rect) {
         let is_move_target =
             matches!(&app.mode, Mode::Move { target_list, .. } if *target_list == list_index);
         let is_list_move_target = matches!(app.mode, Mode::MoveList { .. }) && is_selected_list;
-        let block_style = list_block_style(is_selected_list, is_move_target, is_list_move_target);
+        let block_style = list_block_style(
+            list.border_color.as_deref(),
+            is_selected_list,
+            is_move_target,
+            is_list_move_target,
+            theme,
+        );
         let title = list_title(
             &list.name,
             list.cards.len(),
@@ -462,6 +559,7 @@ fn render_board(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     selected,
                     is_selected_list,
                     is_move_target || is_list_move_target,
+                    theme,
                 );
                 ListItem::new(row.label()).style(style)
             })
@@ -479,7 +577,7 @@ fn render_board(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if let Some(preview_area) = preview_area
         && preview_area.width > 0
     {
-        render_preview_panel(frame, app, preview_area);
+        render_preview_panel(frame, app, preview_area, theme);
     }
 }
 
@@ -545,19 +643,47 @@ fn list_title(name: &str, card_count: usize, is_target: bool) -> String {
 }
 
 fn list_block_style(
+    border_color: Option<&str>,
     is_selected_list: bool,
     is_move_target: bool,
     is_list_move_target: bool,
+    theme: &UiTheme,
 ) -> Style {
     if is_move_target || is_list_move_target {
         Style::default()
-            .fg(MOVE_TARGET)
+            .fg(theme.move_target)
             .add_modifier(Modifier::BOLD)
     } else if is_selected_list {
-        Style::default().fg(HEADER).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.header)
+            .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(UNFOCUSED_PANEL_BORDER)
+        Style::default().fg(parse_color(border_color).unwrap_or(theme.unfocused_panel_border))
     }
+}
+
+fn parse_color(value: Option<&str>) -> Option<Color> {
+    let value = value?;
+    if value.eq_ignore_ascii_case("black") {
+        return Some(Color::Black);
+    }
+    if value.eq_ignore_ascii_case("white") {
+        return Some(Color::White);
+    }
+    let hex = value.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Color::Rgb(red, green, blue))
+}
+
+fn color_from_config(value: &str, fallback: &str) -> Color {
+    parse_color(Some(value))
+        .or_else(|| parse_color(Some(fallback)))
+        .unwrap_or(Color::Reset)
 }
 
 fn card_row_style(
@@ -565,22 +691,23 @@ fn card_row_style(
     selected: bool,
     is_selected_list: bool,
     is_move_target_or_list: bool,
+    theme: &UiTheme,
 ) -> Style {
     if selected {
         Style::default()
-            .fg(SELECTED_TEXT)
+            .fg(theme.selected_text)
             .bg(if is_move_target_or_list {
-                MOVE_TARGET
+                theme.move_target
             } else {
-                ACTIVE_SELECTION
+                theme.active_selection
             })
             .add_modifier(Modifier::BOLD)
     } else if matches!(row, BoardRow::Placeholder(_)) {
-        Style::default().fg(INACTIVE)
+        Style::default().fg(theme.inactive)
     } else if is_selected_list {
-        Style::default().fg(TEXT)
+        Style::default().fg(theme.text)
     } else {
-        Style::default().fg(MUTED)
+        Style::default().fg(theme.muted)
     }
 }
 
@@ -701,7 +828,7 @@ fn board_footer_text(mode: &Mode, show_preview: bool) -> String {
                 "Preview"
             };
             format!(
-                "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [p] {preview} [?] Help [q] Quit"
+                "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [C] Color [p] {preview} [?] Help [q] Quit"
             )
         }
         Mode::Help => "[HELP] [?/Esc/q] Close".to_string(),
@@ -720,11 +847,12 @@ fn instruction_line_for_modal(mode: &Mode) -> String {
             "[MOVE CARD] [h/l] List [j/k] Position [Enter] Move [Esc] Cancel".to_string()
         }
         Mode::MoveList { .. } => "[MOVE LIST] [h/l] Position [Enter] Move [Esc] Cancel".to_string(),
+        Mode::Picker(_) => "[PICKER] [j/k] Select [Enter] Apply [q/Esc] Cancel".to_string(),
         Mode::Normal | Mode::Help => unreachable!(),
     }
 }
 
-fn status_bar_line(text: &str) -> Line<'static> {
+fn status_bar_line(text: &str, theme: &UiTheme) -> Line<'static> {
     let mut spans = Vec::new();
     let mut chars = text.chars().peekable();
     let mut plain = String::new();
@@ -734,7 +862,7 @@ fn status_bar_line(text: &str) -> Line<'static> {
             if !plain.is_empty() {
                 spans.push(Span::styled(
                     std::mem::take(&mut plain),
-                    Style::default().fg(MUTED),
+                    Style::default().fg(theme.muted),
                 ));
             }
             let mut key = String::from("[");
@@ -747,8 +875,8 @@ fn status_bar_line(text: &str) -> Line<'static> {
             spans.push(Span::styled(
                 key,
                 Style::default()
-                    .fg(SELECTED_TEXT)
-                    .bg(PANEL)
+                    .fg(theme.selected_text)
+                    .bg(theme.panel)
                     .add_modifier(Modifier::BOLD),
             ));
         } else {
@@ -756,7 +884,7 @@ fn status_bar_line(text: &str) -> Line<'static> {
         }
     }
     if !plain.is_empty() {
-        spans.push(Span::styled(plain, Style::default().fg(MUTED)));
+        spans.push(Span::styled(plain, Style::default().fg(theme.muted)));
     }
 
     Line::from(spans)
@@ -783,7 +911,8 @@ fn help_text(screen: Screen) -> String {
             "",
             "j/k Move            n New Card          N New List",
             "Up/Down Move        e Edit              M Move List",
-            "Tab/h/l List        m Move              R Rename",
+            "Tab/h/l List        m Move              C Color",
+            "                    r Rename            R Rename",
             "Left/Right List     r Rename            D Delete",
             "q Boards            d Delete",
             "p Preview",
@@ -811,6 +940,7 @@ fn render_input_popup(
     input: &str,
     action: &str,
     area: Rect,
+    theme: &UiTheme,
 ) {
     let popup = centered_rect(64, 40, area);
     frame.render_widget(Clear, popup);
@@ -822,7 +952,7 @@ fn render_input_popup(
                 .title(format!(" {title} "))
                 .borders(Borders::ALL)
                 .padding(Padding::new(2, 2, 1, 1))
-                .style(Style::default().fg(MODAL)),
+                .style(Style::default().fg(theme.modal)),
         );
     frame.render_widget(paragraph, popup);
 }
@@ -831,7 +961,13 @@ fn input_popup_text(label: &str, input: &str, action: &str) -> String {
     format!("{label}\n\n{input}\n\nEnter {action}  Esc Cancel")
 }
 
-fn render_rename_popup(frame: &mut Frame<'_>, target: RenameTarget, input: &str, area: Rect) {
+fn render_rename_popup(
+    frame: &mut Frame<'_>,
+    target: RenameTarget,
+    input: &str,
+    area: Rect,
+    theme: &UiTheme,
+) {
     let popup = centered_rect(64, 40, area);
     frame.render_widget(Clear, popup);
     let paragraph = Paragraph::new(rename_popup_text(target, input))
@@ -842,7 +978,7 @@ fn render_rename_popup(frame: &mut Frame<'_>, target: RenameTarget, input: &str,
                 .title(" Rename ")
                 .borders(Borders::ALL)
                 .padding(Padding::new(2, 2, 1, 1))
-                .style(Style::default().fg(MODAL)),
+                .style(Style::default().fg(theme.modal)),
         );
     frame.render_widget(paragraph, popup);
 }
@@ -855,7 +991,13 @@ fn rename_popup_text(target: RenameTarget, input: &str) -> String {
     )
 }
 
-fn render_delete_confirmation(frame: &mut Frame<'_>, app: &App, target: DeleteTarget, area: Rect) {
+fn render_delete_confirmation(
+    frame: &mut Frame<'_>,
+    app: &App,
+    target: DeleteTarget,
+    area: Rect,
+    theme: &UiTheme,
+) {
     let popup = centered_rect(62, 34, area);
     frame.render_widget(Clear, popup);
     let target_name = delete_target_name(app, target);
@@ -876,12 +1018,12 @@ fn render_delete_confirmation(frame: &mut Frame<'_>, app: &App, target: DeleteTa
                 .title(" Confirm Delete ")
                 .borders(Borders::ALL)
                 .padding(Padding::new(2, 2, 1, 1))
-                .style(Style::default().fg(DANGER)),
+                .style(Style::default().fg(theme.danger)),
         );
     frame.render_widget(paragraph, popup);
 }
 
-fn render_help_popup(frame: &mut Frame<'_>, screen: Screen, area: Rect) {
+fn render_help_popup(frame: &mut Frame<'_>, screen: Screen, area: Rect, theme: &UiTheme) {
     let popup = help_popup_area(area, help_text(screen).as_str());
     frame.render_widget(Clear, popup);
     let paragraph = Paragraph::new(help_text(screen))
@@ -892,9 +1034,58 @@ fn render_help_popup(frame: &mut Frame<'_>, screen: Screen, area: Rect) {
                 .title(" Keyboard Shortcuts ")
                 .borders(Borders::ALL)
                 .padding(Padding::new(2, 2, 1, 1))
-                .style(Style::default().fg(MODAL)),
+                .style(Style::default().fg(theme.modal)),
         );
     frame.render_widget(paragraph, popup);
+}
+
+fn render_picker_popup(frame: &mut Frame<'_>, picker: &PickerState, area: Rect, theme: &UiTheme) {
+    let popup = centered_rect(44, 46, area);
+    frame.render_widget(Clear, popup);
+    let items = picker
+        .options
+        .iter()
+        .zip(picker_option_labels(&picker.options))
+        .map(|option| {
+            let (option, label) = option;
+            let color = parse_color(Some(&option.value)).unwrap_or(theme.modal);
+            ListItem::new(label).style(Style::default().fg(color))
+        })
+        .collect::<Vec<_>>();
+    let list = List::new(items)
+        .highlight_style(
+            Style::default()
+                .fg(theme.selected_text)
+                .bg(theme.active_selection)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ")
+        .block(
+            Block::default()
+                .title(format!(" {} ", picker.title))
+                .borders(Borders::ALL)
+                .padding(Padding::new(2, 2, 1, 1))
+                .title_bottom(
+                    Line::from("j/k Select  Enter Apply  q/Esc Cancel")
+                        .right_aligned()
+                        .style(Style::default().fg(theme.muted)),
+                )
+                .style(Style::default().fg(theme.modal)),
+        );
+    let mut state = ListState::default().with_selected(Some(picker.selected));
+    frame.render_stateful_widget(list, popup, &mut state);
+}
+
+fn picker_option_labels(options: &[PickerOption]) -> Vec<String> {
+    let width = options
+        .iter()
+        .map(|option| option.label.len())
+        .max()
+        .unwrap_or(0);
+    options
+        .iter()
+        .map(|option| format!("{:<width$}  {}", option.label, option.value))
+        .collect()
 }
 
 fn delete_target_name(app: &App, target: DeleteTarget) -> String {
@@ -923,7 +1114,7 @@ fn delete_target_name(app: &App, target: DeleteTarget) -> String {
     }
 }
 
-fn render_preview_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn render_preview_panel(frame: &mut Frame<'_>, app: &App, area: Rect, theme: &UiTheme) {
     let content = app
         .selected_card_content()
         .unwrap_or_else(|| "No card selected".to_string());
@@ -931,7 +1122,7 @@ fn render_preview_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Block::default()
             .title(" Preview ")
             .borders(Borders::ALL)
-            .style(Style::default().fg(PREVIEW)),
+            .style(Style::default().fg(theme.preview)),
     );
     frame.render_widget(paragraph, area);
 }
@@ -1028,7 +1219,7 @@ fn wrapped_text_lines(text: &str, inner_width: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Board, List, Project};
+    use crate::board::{Board, List, Project, default_app_config};
     use crate::card::Card;
     use crate::{app::App, mode::Screen};
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
@@ -1038,6 +1229,8 @@ mod tests {
         Board {
             name: "strike".to_string(),
             path: PathBuf::from("strike"),
+            theme: default_theme_colors(),
+            colors: crate::board::default_color_options(),
             lists: vec![
                 List {
                     name: "TODO".to_string(),
@@ -1046,11 +1239,13 @@ mod tests {
                         card("first task", "task1.md"),
                         card("second task", "task2.md"),
                     ],
+                    border_color: None,
                 },
                 List {
                     name: "DONE".to_string(),
                     path: PathBuf::from("done"),
                     cards: Vec::new(),
+                    border_color: None,
                 },
             ],
         }
@@ -1059,6 +1254,7 @@ mod tests {
     fn sample_projects_app(mode: Mode) -> App {
         App {
             root: PathBuf::from("/tmp"),
+            config: default_app_config(),
             screen: Screen::Projects,
             mode,
             show_preview: false,
@@ -1086,6 +1282,7 @@ mod tests {
         let board = sample_board();
         App {
             root: PathBuf::from("/tmp"),
+            config: default_app_config(),
             screen: Screen::Board,
             mode: Mode::Normal,
             show_preview,
@@ -1159,7 +1356,9 @@ mod tests {
                 }
                 found_non_space = true;
                 let style = cell.style();
-                if style.fg == Some(INACTIVE) || style.add_modifier.contains(Modifier::DIM) {
+                if style.fg == Some(default_ui_theme().inactive)
+                    || style.add_modifier.contains(Modifier::DIM)
+                {
                     found_dimmed = true;
                 }
             }
@@ -1171,7 +1370,7 @@ mod tests {
         let backend = TestBackend::new(area.width, area.height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render_board(frame, app, area))
+            .draw(|frame| render_board(frame, app, area, &app_theme(app)))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -1194,7 +1393,7 @@ mod tests {
         let backend = TestBackend::new(area.width, area.height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render_projects(frame, app, area))
+            .draw(|frame| render_projects(frame, app, area, &app_theme(app)))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -1249,16 +1448,20 @@ mod tests {
         let board = Board {
             name: "Work Board".to_string(),
             path: PathBuf::from("work"),
+            theme: default_theme_colors(),
+            colors: crate::board::default_color_options(),
             lists: vec![
                 List {
                     name: "Todo".to_string(),
                     path: PathBuf::from("work/todo"),
                     cards: vec![card("Card A", "a.md"), card("Card B", "b.md")],
+                    border_color: None,
                 },
                 List {
                     name: "Done".to_string(),
                     path: PathBuf::from("work/done"),
                     cards: Vec::new(),
+                    border_color: None,
                 },
             ],
         };
@@ -1312,16 +1515,20 @@ mod tests {
         let board = Board {
             name: "strike".to_string(),
             path: PathBuf::from("strike"),
+            theme: default_theme_colors(),
+            colors: crate::board::default_color_options(),
             lists: vec![
                 List {
                     name: "TODO".to_string(),
                     path: PathBuf::from("todo"),
                     cards: vec![card("task", "task.md")],
+                    border_color: None,
                 },
                 List {
                     name: "DONE".to_string(),
                     path: PathBuf::from("done"),
                     cards: Vec::new(),
+                    border_color: None,
                 },
             ],
         };
@@ -1337,10 +1544,13 @@ mod tests {
         let board = Board {
             name: "solo".to_string(),
             path: PathBuf::from("solo"),
+            theme: default_theme_colors(),
+            colors: crate::board::default_color_options(),
             lists: vec![List {
                 name: "TODO".to_string(),
                 path: PathBuf::from("todo"),
                 cards: vec![card("task", "task.md")],
+                border_color: None,
             }],
         };
 
@@ -1359,11 +1569,12 @@ mod tests {
 
     #[test]
     fn palette_uses_warm_niffler_colors() {
-        assert_eq!(ACTIVE_SELECTION, Color::Rgb(218, 173, 82));
-        assert_eq!(HEADER, Color::Rgb(236, 196, 91));
-        assert_eq!(PANEL, Color::Rgb(151, 111, 58));
-        assert_ne!(ACTIVE_SELECTION, Color::LightCyan);
-        assert_ne!(SHELL, Color::Blue);
+        let theme = default_ui_theme();
+        assert_eq!(theme.active_selection, Color::Rgb(218, 173, 82));
+        assert_eq!(theme.header, Color::Rgb(236, 196, 91));
+        assert_eq!(theme.panel, Color::Rgb(151, 111, 58));
+        assert_ne!(theme.active_selection, Color::LightCyan);
+        assert_ne!(theme.shell, Color::Blue);
     }
 
     #[test]
@@ -1385,54 +1596,92 @@ mod tests {
 
     #[test]
     fn list_block_style_marks_selected_and_move_targets() {
+        let theme = default_ui_theme();
         assert_eq!(
-            list_block_style(true, false, false),
-            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-        );
-        assert_eq!(
-            list_block_style(false, true, false),
+            list_block_style(None, true, false, false, &theme),
             Style::default()
-                .fg(MOVE_TARGET)
+                .fg(theme.header)
                 .add_modifier(Modifier::BOLD),
         );
         assert_eq!(
-            list_block_style(false, false, false),
-            Style::default().fg(UNFOCUSED_PANEL_BORDER)
+            list_block_style(Some("#22c55e"), false, true, false, &theme),
+            Style::default()
+                .fg(theme.move_target)
+                .add_modifier(Modifier::BOLD),
+        );
+        assert_eq!(
+            list_block_style(None, false, false, false, &theme),
+            Style::default().fg(theme.unfocused_panel_border)
+        );
+        assert_eq!(
+            list_block_style(Some("#22c55e"), false, false, false, &theme),
+            Style::default().fg(Color::Rgb(34, 197, 94))
+        );
+        assert_eq!(
+            list_block_style(Some("not-a-color"), false, false, false, &theme),
+            Style::default().fg(theme.unfocused_panel_border)
+        );
+    }
+
+    #[test]
+    fn picker_option_labels_align_values() {
+        let options = vec![
+            PickerOption {
+                label: "Default".to_string(),
+                value: "#3c3c3c".to_string(),
+            },
+            PickerOption {
+                label: "Red".to_string(),
+                value: "#ef4444".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            picker_option_labels(&options),
+            vec!["Default  #3c3c3c", "Red      #ef4444"]
         );
     }
 
     #[test]
     fn card_row_style_for_placeholder_is_dimmed_and_non_selected_cards_get_list_colors() {
-        let style = card_row_style(&BoardRow::Placeholder("No cards"), false, true, false);
-        assert_eq!(style, Style::default().fg(INACTIVE));
+        let theme = default_ui_theme();
+        let style = card_row_style(
+            &BoardRow::Placeholder("No cards"),
+            false,
+            true,
+            false,
+            &theme,
+        );
+        assert_eq!(style, Style::default().fg(theme.inactive));
 
         assert_eq!(
-            card_row_style(&BoardRow::Card("card"), false, true, false),
-            Style::default().fg(TEXT)
+            card_row_style(&BoardRow::Card("card"), false, true, false, &theme),
+            Style::default().fg(theme.text)
         );
         assert_eq!(
-            card_row_style(&BoardRow::Card("card"), false, false, false),
-            Style::default().fg(MUTED)
+            card_row_style(&BoardRow::Card("card"), false, false, false, &theme),
+            Style::default().fg(theme.muted)
         );
     }
 
     #[test]
     fn selected_card_row_is_highlighted_with_bold_background() {
-        let selected_style = card_row_style(&BoardRow::Card("card"), true, true, false);
+        let theme = default_ui_theme();
+        let selected_style = card_row_style(&BoardRow::Card("card"), true, true, false, &theme);
         assert_eq!(
             selected_style,
             Style::default()
-                .fg(SELECTED_TEXT)
-                .bg(ACTIVE_SELECTION)
+                .fg(theme.selected_text)
+                .bg(theme.active_selection)
                 .add_modifier(Modifier::BOLD),
         );
 
-        let selected_move_style = card_row_style(&BoardRow::Card("card"), true, true, true);
+        let selected_move_style = card_row_style(&BoardRow::Card("card"), true, true, true, &theme);
         assert_eq!(
             selected_move_style,
             Style::default()
-                .fg(SELECTED_TEXT)
-                .bg(MOVE_TARGET)
+                .fg(theme.selected_text)
+                .bg(theme.move_target)
                 .add_modifier(Modifier::BOLD),
         );
     }
@@ -1460,16 +1709,20 @@ mod tests {
         let board = Board {
             name: "focus".to_string(),
             path: PathBuf::from("focus"),
+            theme: default_theme_colors(),
+            colors: crate::board::default_color_options(),
             lists: vec![List {
                 name: "TODO".to_string(),
                 path: PathBuf::from("todo"),
                 cards: (0u8..10)
                     .map(|index| card(&format!("card {index:02}"), &format!("card-{index}.md")))
                     .collect(),
+                border_color: None,
             }],
         };
         let app = App {
             root: PathBuf::from("/tmp"),
+            config: default_app_config(),
             screen: Screen::Board,
             mode: Mode::MoveList { target_position: 0 },
             show_preview: false,
@@ -1493,14 +1746,18 @@ mod tests {
         let board = Board {
             name: "strike".to_string(),
             path: PathBuf::from("strike"),
+            theme: default_theme_colors(),
+            colors: crate::board::default_color_options(),
             lists: vec![List {
                 name: "TODO".to_string(),
                 path: PathBuf::from("todo"),
                 cards: Vec::new(),
+                border_color: None,
             }],
         };
         let app = App {
             root: PathBuf::from("/tmp"),
+            config: default_app_config(),
             screen: Screen::Board,
             mode: Mode::Normal,
             show_preview: false,
@@ -1523,21 +1780,26 @@ mod tests {
         let board = Board {
             name: "strike".to_string(),
             path: PathBuf::from("strike"),
+            theme: default_theme_colors(),
+            colors: crate::board::default_color_options(),
             lists: vec![
                 List {
                     name: "TODO".to_string(),
                     path: PathBuf::from("todo"),
                     cards: vec![card("first task", "task1.md")],
+                    border_color: None,
                 },
                 List {
                     name: "DONE".to_string(),
                     path: PathBuf::from("done"),
                     cards: Vec::new(),
+                    border_color: None,
                 },
             ],
         };
         let app = App {
             root: PathBuf::from("/tmp"),
+            config: default_app_config(),
             screen: Screen::Board,
             mode: Mode::MoveList { target_position: 1 },
             show_preview: false,
@@ -1560,21 +1822,26 @@ mod tests {
         let board = Board {
             name: "strike".to_string(),
             path: PathBuf::from("strike"),
+            theme: default_theme_colors(),
+            colors: crate::board::default_color_options(),
             lists: vec![
                 List {
                     name: "TODO".to_string(),
                     path: PathBuf::from("todo"),
                     cards: vec![card("first task", "task1.md")],
+                    border_color: None,
                 },
                 List {
                     name: "DONE".to_string(),
                     path: PathBuf::from("done"),
                     cards: Vec::new(),
+                    border_color: None,
                 },
             ],
         };
         let app = App {
             root: PathBuf::from("/tmp"),
+            config: default_app_config(),
             screen: Screen::Board,
             mode: Mode::Move {
                 target_list: 1,
@@ -1773,12 +2040,12 @@ mod tests {
         let app = sample_board_app(false);
         assert_eq!(
             instruction_line(&app),
-            "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [p] Preview [?] Help [q] Quit"
+            "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [C] Color [p] Preview [?] Help [q] Quit"
         );
         let app = sample_board_app(true);
         assert_eq!(
             instruction_line(&app),
-            "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [p] Hide Preview [?] Help [q] Quit"
+            "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [C] Color [p] Hide Preview [?] Help [q] Quit"
         );
     }
 
@@ -1792,6 +2059,7 @@ mod tests {
         assert!(text.contains("Tab/h/l"));
         assert!(text.contains("n New Card"));
         assert!(text.contains("N New List"));
+        assert!(text.contains("C Color"));
         assert!(text.contains("p Preview"));
         assert!(text.contains(HELP_CLOSE_LINE));
         assert!(text.contains("? / Esc / q"));
