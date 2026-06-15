@@ -16,9 +16,7 @@ The interface is designed to feel like a polished terminal tool: fast navigation
 
 ## Demo
 
-<video src="demo.mov" controls muted loop playsinline width="100%">
-  <a href="demo.mov">Watch the demo video</a>
-</video>
+![Niffler demo](demo.gif)
 
 ## Features
 
