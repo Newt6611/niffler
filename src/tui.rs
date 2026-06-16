@@ -134,6 +134,9 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
             area,
             &theme,
         ),
+        Mode::Search { input, selected } => {
+            render_search_popup(frame, app, input, *selected, area, &theme)
+        }
         Mode::Rename { target, input } => render_rename_popup(frame, *target, input, area, &theme),
         Mode::ConfirmDelete { target } => {
             render_delete_confirmation(frame, app, *target, area, &theme)
@@ -150,6 +153,7 @@ fn has_modal(mode: &Mode) -> bool {
         Mode::CreateProject { .. }
             | Mode::CreateList { .. }
             | Mode::Add { .. }
+            | Mode::Search { .. }
             | Mode::Rename { .. }
             | Mode::ConfirmDelete { .. }
             | Mode::Help
@@ -1002,7 +1006,7 @@ fn board_footer_text(mode: &Mode, show_preview: bool) -> String {
                 "Preview"
             };
             format!(
-                "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [c] Card Color [C] List Color [p] {preview} [?] Help [q] Quit"
+                "[NORMAL] [Tab] List [j/k] Move [n] New [s] Search [m] Move [c] Card Color [C] List Color [p] {preview} [?] Help [q] Quit"
             )
         }
         Mode::Help => "[HELP] [?/Esc/q] Close".to_string(),
@@ -1015,6 +1019,7 @@ fn instruction_line_for_modal(mode: &Mode) -> String {
         Mode::CreateProject { .. } | Mode::CreateList { .. } | Mode::Add { .. } => {
             "[CREATE] [Enter] Create [Esc] Cancel".to_string()
         }
+        Mode::Search { .. } => "[SEARCH] [Up/Down] Select [Enter] Open [Esc] Cancel".to_string(),
         Mode::Rename { .. } => "[RENAME] [Enter] Rename [Esc] Cancel".to_string(),
         Mode::ConfirmDelete { .. } => "[CONFIRM] [y/Enter] Confirm [n/Esc] Cancel".to_string(),
         Mode::Move { .. } => {
@@ -1086,7 +1091,8 @@ fn help_text(screen: Screen) -> String {
             "j/k Move            n New Card          N New List",
             "Up/Down Move        e Edit              M Move List",
             "Tab/h/l List        m Move              C List Color",
-            "                    r Rename            R Rename",
+            "                    s Search            R Rename",
+            "                    r Rename",
             "Left/Right List     r Rename            D Delete",
             "q Boards            d Delete            c Card Color",
             "p Preview",
@@ -1133,6 +1139,75 @@ fn render_input_popup(
 
 fn input_popup_text(label: &str, input: &str, action: &str) -> String {
     format!("{label}\n\n{input}\n\nEnter {action}  Esc Cancel")
+}
+
+fn render_search_popup(
+    frame: &mut Frame<'_>,
+    app: &App,
+    input: &str,
+    selected: usize,
+    area: Rect,
+    theme: &UiTheme,
+) {
+    let popup = centered_rect(70, 55, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(" Search Cards ")
+        .borders(Borders::ALL)
+        .padding(Padding::new(2, 2, 1, 1))
+        .style(Style::default().fg(theme.modal));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Min(3),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let input_text = Paragraph::new(format!("Card title\n\n{input}"))
+        .style(Style::default().fg(theme.text))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(input_text, layout[0]);
+
+    let results = app.search_card_results(input);
+    if results.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No matching cards").style(Style::default().fg(theme.inactive)),
+            layout[1],
+        );
+    } else {
+        let items = results
+            .iter()
+            .map(|result| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(result.title.clone(), Style::default().fg(theme.text)),
+                    Span::styled(
+                        format!("  {}", result.list_name),
+                        Style::default().fg(theme.inactive),
+                    ),
+                ]))
+            })
+            .collect::<Vec<_>>();
+        let list = List::new(items)
+            .highlight_style(
+                Style::default()
+                    .fg(theme.selected_text)
+                    .bg(theme.active_selection)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("> ");
+        let mut state = ListState::default().with_selected(Some(selected.min(results.len() - 1)));
+        frame.render_stateful_widget(list, layout[1], &mut state);
+    }
+
+    frame.render_widget(
+        Paragraph::new("Enter Open  Esc Cancel").style(Style::default().fg(theme.muted)),
+        layout[2],
+    );
 }
 
 fn render_rename_popup(
@@ -2508,12 +2583,12 @@ mod tests {
         let app = sample_board_app(false);
         assert_eq!(
             instruction_line(&app),
-            "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [c] Card Color [C] List Color [p] Preview [?] Help [q] Quit"
+            "[NORMAL] [Tab] List [j/k] Move [n] New [s] Search [m] Move [c] Card Color [C] List Color [p] Preview [?] Help [q] Quit"
         );
         let app = sample_board_app(true);
         assert_eq!(
             instruction_line(&app),
-            "[NORMAL] [Tab] List [j/k] Move [n] New [m] Move [c] Card Color [C] List Color [p] Hide Preview [?] Help [q] Quit"
+            "[NORMAL] [Tab] List [j/k] Move [n] New [s] Search [m] Move [c] Card Color [C] List Color [p] Hide Preview [?] Help [q] Quit"
         );
     }
 
@@ -2606,6 +2681,24 @@ mod tests {
         assert!(lines.contains("Roadmap"));
         assert!(lines.contains("Enter Create  Esc Cancel"));
         assert!(has_dimmed_background_visible(&buffer, area, popup));
+    }
+
+    #[test]
+    fn search_modal_renders_filtered_card_titles() {
+        let mut app = sample_board_app(false);
+        app.mode = Mode::Search {
+            input: "task".to_string(),
+            selected: 1,
+        };
+        let area = Rect::new(0, 0, 80, 24);
+        let lines = render_tui_lines(&app, area).join("\n");
+
+        assert!(lines.contains("Search Cards"));
+        assert!(lines.contains("Card title"));
+        assert!(lines.contains("task"));
+        assert!(lines.contains("first task"));
+        assert!(lines.contains("second task"));
+        assert!(lines.contains("Enter Open  Esc Cancel"));
     }
 
     #[test]

@@ -121,6 +121,7 @@ fn handle_board_key(
         }
         Mode::CreateList { input } => handle_create_list_key(app, key, input),
         Mode::Add { input } => handle_add_key(app, key, input),
+        Mode::Search { input, selected } => handle_search_key(app, key, input, selected),
         Mode::Rename { target, input } => handle_rename_key(app, key, target, input),
         Mode::Move {
             target_list,
@@ -202,6 +203,7 @@ fn handle_normal_key(
         KeyCode::Char('c') => start_card_color_picker(app),
         KeyCode::Char('C') => start_list_color_picker(app),
         KeyCode::Char('?') => app.mode = Mode::Help,
+        KeyCode::Char('s') => start_card_search(app),
         KeyCode::Char('n') => start_new_card(app),
         KeyCode::Char('N') => {
             app.mode = Mode::CreateList {
@@ -277,6 +279,13 @@ fn start_new_card(app: &mut App) {
     };
 }
 
+fn start_card_search(app: &mut App) {
+    app.mode = Mode::Search {
+        input: String::new(),
+        selected: 0,
+    };
+}
+
 fn start_move_card(app: &mut App) {
     if app.selected_card_path().is_none() {
         return;
@@ -348,6 +357,44 @@ fn handle_add_key(app: &mut App, key: KeyEvent, mut input: String) -> io::Result
             }
         }
         _ => app.mode = Mode::Add { input },
+    }
+    Ok(())
+}
+
+fn handle_search_key(
+    app: &mut App,
+    key: KeyEvent,
+    mut input: String,
+    mut selected: usize,
+) -> io::Result<()> {
+    match key.code {
+        KeyCode::Esc => app.mode = Mode::Normal,
+        KeyCode::Enter => {
+            app.focus_search_result(&input, selected);
+            app.mode = Mode::Normal;
+        }
+        KeyCode::Up => {
+            selected = selected.saturating_sub(1);
+            app.mode = Mode::Search { input, selected };
+        }
+        KeyCode::Down => {
+            let result_count = app.search_card_results(&input).len();
+            if result_count > 0 {
+                selected = (selected + 1).min(result_count - 1);
+            }
+            app.mode = Mode::Search { input, selected };
+        }
+        KeyCode::Backspace => {
+            input.pop();
+            app.mode = Mode::Search { input, selected: 0 };
+        }
+        KeyCode::Char(ch) => {
+            if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT {
+                input.push(ch);
+            }
+            app.mode = Mode::Search { input, selected: 0 };
+        }
+        _ => app.mode = Mode::Search { input, selected },
     }
     Ok(())
 }
@@ -729,5 +776,139 @@ mod tests {
         start_move_card(&mut app);
 
         assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn s_opens_card_search_popup() {
+        let mut app = app_with_empty_board();
+
+        start_card_search(&mut app);
+
+        assert_eq!(
+            app.mode,
+            Mode::Search {
+                input: String::new(),
+                selected: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn enter_in_search_focuses_matching_card() {
+        let mut app = app_with_empty_board();
+        app.board = Some(Board {
+            name: "ready".to_string(),
+            path: PathBuf::from("/tmp/ready"),
+            theme: default_theme_colors(),
+            colors: default_color_options(),
+            lists: vec![
+                List {
+                    name: "TODO".to_string(),
+                    path: PathBuf::from("/tmp/ready/todo"),
+                    cards: vec![Card {
+                        title: "Alpha".to_string(),
+                        filename: "alpha.md".to_string(),
+                        path: PathBuf::from("/tmp/ready/todo/alpha.md"),
+                        content: String::new(),
+                        position: 1000,
+                        color: None,
+                    }],
+                    border_color: None,
+                },
+                List {
+                    name: "DONE".to_string(),
+                    path: PathBuf::from("/tmp/ready/done"),
+                    cards: vec![Card {
+                        title: "Ship Preview".to_string(),
+                        filename: "ship-preview.md".to_string(),
+                        path: PathBuf::from("/tmp/ready/done/ship-preview.md"),
+                        content: String::new(),
+                        position: 1000,
+                        color: None,
+                    }],
+                    border_color: None,
+                },
+            ],
+        });
+        app.selected_cards = vec![0, 0];
+
+        handle_search_key(
+            &mut app,
+            KeyEvent::from(KeyCode::Enter),
+            "preview".to_string(),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.selected_list, 1);
+        assert_eq!(app.selected_cards[1], 0);
+        assert_eq!(app.status, "Found Ship Preview");
+    }
+
+    #[test]
+    fn typing_in_search_updates_query_and_resets_selected_result() {
+        let mut app = app_with_empty_board();
+
+        handle_search_key(
+            &mut app,
+            KeyEvent::from(KeyCode::Char('x')),
+            String::new(),
+            2,
+        )
+        .unwrap();
+
+        assert_eq!(
+            app.mode,
+            Mode::Search {
+                input: "x".to_string(),
+                selected: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn search_arrow_keys_move_selected_result_within_matches() {
+        let mut app = app_with_empty_board();
+        app.board = Some(Board {
+            name: "ready".to_string(),
+            path: PathBuf::from("/tmp/ready"),
+            theme: default_theme_colors(),
+            colors: default_color_options(),
+            lists: vec![List {
+                name: "TODO".to_string(),
+                path: PathBuf::from("/tmp/ready/todo"),
+                cards: vec![
+                    Card {
+                        title: "Alpha".to_string(),
+                        filename: "alpha.md".to_string(),
+                        path: PathBuf::from("/tmp/ready/todo/alpha.md"),
+                        content: String::new(),
+                        position: 1000,
+                        color: None,
+                    },
+                    Card {
+                        title: "Beta".to_string(),
+                        filename: "beta.md".to_string(),
+                        path: PathBuf::from("/tmp/ready/todo/beta.md"),
+                        content: String::new(),
+                        position: 2000,
+                        color: None,
+                    },
+                ],
+                border_color: None,
+            }],
+        });
+        app.selected_cards = vec![0];
+
+        handle_search_key(&mut app, KeyEvent::from(KeyCode::Down), String::new(), 0).unwrap();
+
+        assert_eq!(
+            app.mode,
+            Mode::Search {
+                input: String::new(),
+                selected: 1,
+            }
+        );
     }
 }

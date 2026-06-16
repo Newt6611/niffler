@@ -16,6 +16,10 @@ pub enum Mode {
     Add {
         input: String,
     },
+    Search {
+        input: String,
+        selected: usize,
+    },
     Rename {
         target: RenameTarget,
         input: String,
@@ -80,6 +84,7 @@ impl Mode {
             Self::CreateProject { .. } => "New Board",
             Self::CreateList { .. } => "New List",
             Self::Add { .. } => "Add",
+            Self::Search { .. } => "Search",
             Self::Rename { .. } => "Rename",
             Self::Help => "Help",
             Self::Move { .. } => "Move",

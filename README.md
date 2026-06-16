@@ -157,6 +157,7 @@ export NIFFLER_EDITOR="code --wait"
 | `n` | New card |
 | `N` | New list |
 | `e` | Edit card |
+| `s` | Search cards by title |
 | `m` | Move card |
 | `M` | Move list |
 | `C` | Change list border color |

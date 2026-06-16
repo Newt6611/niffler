@@ -5,6 +5,14 @@ use crate::mode::{DeleteTarget, Mode, PickerOption, PickerState, PickerTarget, S
 use std::io;
 use std::path::PathBuf;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchResult {
+    pub list_index: usize,
+    pub card_index: usize,
+    pub list_name: String,
+    pub title: String,
+}
+
 pub struct App {
     pub root: PathBuf,
     pub config: AppConfig,
@@ -173,6 +181,58 @@ impl App {
         self.reload_board()?;
         self.status = "Updated card color".to_string();
         Ok(())
+    }
+
+    pub fn search_card_title(&mut self, query: &str) {
+        self.focus_search_result(query, 0);
+    }
+
+    pub fn search_card_results(&self, query: &str) -> Vec<SearchResult> {
+        let query = query.trim().to_lowercase();
+        let Some(board) = &self.board else {
+            return Vec::new();
+        };
+
+        let mut results = Vec::new();
+        for (list_index, list) in board.lists.iter().enumerate() {
+            for (card_index, card) in list.cards.iter().enumerate() {
+                if query.is_empty() || card.title.to_lowercase().contains(&query) {
+                    results.push(SearchResult {
+                        list_index,
+                        card_index,
+                        list_name: list.name.clone(),
+                        title: card.title.clone(),
+                    });
+                }
+            }
+        }
+        results
+    }
+
+    pub fn focus_search_result(&mut self, query: &str, selected: usize) {
+        let results = self.search_card_results(query);
+        if results.is_empty() {
+            let query = query.trim();
+            if query.is_empty() {
+                self.status = "No cards found".to_string();
+            } else {
+                self.status = format!("No card found for {}", query);
+            }
+            return;
+        }
+
+        let result = results[selected.min(results.len() - 1)].clone();
+        self.selected_list = result.list_index;
+        let list_len = self
+            .board
+            .as_ref()
+            .map(|board| board.lists.len())
+            .unwrap_or(0);
+        self.ensure_selection_shape(list_len);
+        if let Some(selected_card) = self.selected_cards.get_mut(result.list_index) {
+            *selected_card = result.card_index;
+        }
+        self.status = format!("Found {}", result.title);
     }
 
     pub fn open_selected_project(&mut self) -> io::Result<()> {
@@ -1068,6 +1128,76 @@ mod tests {
                 card_index: 0,
             }
         );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn search_card_title_focuses_first_case_insensitive_match() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("work/todo")).unwrap();
+        fs::create_dir_all(root.join("work/done")).unwrap();
+        fs::write(root.join("work/todo/alpha.md"), "# Alpha Task\n").unwrap();
+        fs::write(root.join("work/done/ship-preview.md"), "# Ship Preview\n").unwrap();
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_selected_project().unwrap();
+        app.selected_list = 0;
+        app.selected_cards = vec![0, 0];
+
+        app.search_card_title("preview");
+
+        let board = app.board.as_ref().unwrap();
+        assert_eq!(board.lists[app.selected_list].name, "done");
+        assert_eq!(
+            board.lists[app.selected_list].cards[app.selected_cards[app.selected_list]].title,
+            "Ship Preview"
+        );
+        assert_eq!(app.status, "Found Ship Preview");
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn search_card_results_show_all_cards_for_empty_query_and_filter_titles() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("work/todo")).unwrap();
+        fs::create_dir_all(root.join("work/done")).unwrap();
+        fs::write(root.join("work/todo/alpha.md"), "# Alpha Task\n").unwrap();
+        fs::write(root.join("work/done/ship-preview.md"), "# Ship Preview\n").unwrap();
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_selected_project().unwrap();
+
+        let all_titles = app
+            .search_card_results("")
+            .into_iter()
+            .map(|result| result.title)
+            .collect::<Vec<_>>();
+        assert_eq!(all_titles, vec!["Ship Preview", "Alpha Task"]);
+
+        let filtered_titles = app
+            .search_card_results("PRE")
+            .into_iter()
+            .map(|result| result.title)
+            .collect::<Vec<_>>();
+        assert_eq!(filtered_titles, vec!["Ship Preview"]);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn focus_search_result_uses_selected_filtered_match() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("work/todo")).unwrap();
+        fs::write(root.join("work/todo/alpha.md"), "# Alpha\n").unwrap();
+        fs::write(root.join("work/todo/beta.md"), "# Beta\n").unwrap();
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_selected_project().unwrap();
+
+        app.focus_search_result("", 1);
+
+        let board = app.board.as_ref().unwrap();
+        assert_eq!(
+            board.lists[app.selected_list].cards[app.selected_cards[app.selected_list]].title,
+            "Beta"
+        );
+        assert_eq!(app.status, "Found Beta");
         fs::remove_dir_all(root).ok();
     }
 }
