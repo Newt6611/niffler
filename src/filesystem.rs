@@ -267,9 +267,10 @@ pub fn create_card(list_path: &Path, title: &str) -> io::Result<PathBuf> {
     }
 
     let position = next_card_position(list_path)?;
+    let content = markdown_with_position(&format!("# {}\n", title.trim()), position);
     fs::write(
         &path,
-        markdown_with_position(&format!("# {}\n", title.trim()), position),
+        markdown_with_color(&content, &default_color_options()[0].value),
     )?;
     Ok(path)
 }
@@ -1238,6 +1239,20 @@ mod tests {
         assert!(content.contains("\ncreated_at: "));
         assert!(content.contains("\nupdated_at: "));
         assert!(content.ends_with("---\n\n# Learn KZG\n"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn create_card_writes_default_card_color() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("todo")).unwrap();
+
+        create_card(&root.join("todo"), "Task").unwrap();
+
+        let content = fs::read_to_string(root.join("todo/task.md")).unwrap();
+        assert!(content.contains("\ncolor: \"#f59e0b\"\n"));
+        let board = load_board(&root).unwrap();
+        assert_eq!(board.lists[0].cards[0].color.as_deref(), Some("#f59e0b"));
         fs::remove_dir_all(root).unwrap();
     }
 
